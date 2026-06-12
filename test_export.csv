@@ -1,0 +1,18 @@
+Company,Contact,Email,Website,Country,WhatsApp,Category,Source,Status,Note,Level,Owner,NextFollowup,History
+test11,,425407983@qq.com,https://test.com,中国,+8617029976,ELDERLY,,NEW,,C,,,
+test,,425407983@qq.com,https://test.com,,,ELDERLY,,QUOTED, gps sos watch,C,sales,timeline test,"
+2026-06-10 First email sent.
+2026-06-10 12:45 Status: NEW -> CONTACTED
+2026-06-10 12:45 Note: first contact test
+2026-06-10 13:09 Status: CONTACTED -> QUOTED
+2026-06-10 13:09 Note:  gps sos watch
+2026-06-10 13:34 Note:  gps sos watch
+2026-06-10 14:36 Note:  gps sos watch
+2026-06-10 15:08 Note:  gps sos watch
+2026-06-10 15:09 Note:  gps sos watch
+2026-06-10 16:14 Note:  gps sos watch
+2026-06-10 17:29 Email Draft Created | To: 425407983@qq.com | Subject: GPS SOS Watch Introduction
+2026-06-10 17:30 Email Draft Created | To: 425407983@qq.com | Subject: GPS SOS Watch Introduction
+2026-06-10 17:30 Email Draft Created | To: 425407983@qq.com | Subject: GPS SOS Watch Introduction"
+test,,425407983@qq.com,https://test.com,,,ELDERLY,,NEW,,C,,,
+test,,425407983@qq.com,https://test.com,,,ELDERLY,,NEW,,C,,,

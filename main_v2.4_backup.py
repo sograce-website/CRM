@@ -1,0 +1,199 @@
+from fastapi import FastAPI, Form, UploadFile, File
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+import sqlite3, csv, io, datetime
+
+app = FastAPI()
+DB = "crm.db"
+
+def db():
+    return sqlite3.connect(DB)
+
+def init_db():
+    conn = db()
+    c = conn.cursor()
+    for col, default in [
+        ("note","''"),("country","''"),("contact","''"),("whatsapp","''"),("source","''"),
+        ("level","'C'"),("owner","''"),("next_followup","''"),("history","''")
+    ]:
+        try:
+            c.execute(f"ALTER TABLE leads ADD COLUMN {col} TEXT DEFAULT {default}")
+        except:
+            pass
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def stats():
+    conn = db()
+    c = conn.cursor()
+    total = c.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+    new = c.execute("SELECT COUNT(*) FROM leads WHERE status='NEW'").fetchone()[0]
+    contacted = c.execute("SELECT COUNT(*) FROM leads WHERE status='CONTACTED'").fetchone()[0]
+    ordered = c.execute("SELECT COUNT(*) FROM leads WHERE status='ORDERED'").fetchone()[0]
+    conn.close()
+    return total,new,contacted,ordered
+
+@app.get("/", response_class=HTMLResponse)
+def home(q: str = ""):
+    conn = db()
+    c = conn.cursor()
+    if q:
+        like = f"%{q}%"
+        leads = c.execute("""
+        SELECT id,company,contact,email,website,country,whatsapp,category,source,status,note,level,owner,next_followup
+        FROM leads
+        WHERE company LIKE ? OR email LIKE ? OR website LIKE ? OR country LIKE ? OR contact LIKE ? OR whatsapp LIKE ? OR source LIKE ?
+        ORDER BY id DESC
+        """,(like,like,like,like,like,like,like)).fetchall()
+    else:
+        leads = c.execute("""
+        SELECT id,company,contact,email,website,country,whatsapp,category,source,status,note,level,owner,next_followup
+        FROM leads ORDER BY id DESC
+        """).fetchall()
+    conn.close()
+
+    total,new,contacted,ordered = stats()
+
+    rows = ""
+    today = datetime.date.today().isoformat()
+    for l in leads:
+        highlight = "style='background:#4a2600'" if l[13] and l[13] <= today else ""
+        rows += f"""
+        <tr {highlight}>
+            <td><a href="/lead/{l[0]}">{l[1]}</a></td><td>{l[2]}</td><td>{l[3]}</td><td>{l[5]}</td>
+            <td>{l[6]}</td><td>{l[7]}</td><td>{l[8]}</td><td>{l[11]}</td><td>{l[12]}</td><td>{l[13]}</td>
+            <td>{l[9]}</td><td>{l[10]}</td>
+            <td><a class="delete" href="/delete/{l[0]}">Delete</a></td>
+        </tr>
+        """
+
+    return f"""
+<html><head><title>SOGRACE CRM V2.4</title>
+<style>
+body{{font-family:Arial;background:#07111f;color:white;margin:0}}
+.header{{background:#0b1f3a;padding:20px;font-size:28px;font-weight:bold}}
+.container{{padding:30px}}.card{{background:#111d33;padding:20px;border-radius:12px;margin-bottom:20px}}
+input,select,textarea{{padding:10px;margin:6px;border-radius:6px;border:0}}
+button{{padding:10px 16px;background:#1683ff;color:white;border:0;border-radius:6px}}
+a{{color:white}}.delete{{background:#d93333;padding:8px 12px;border-radius:6px;text-decoration:none}}
+.export{{background:#0bbf7a;padding:10px 18px;border-radius:6px;text-decoration:none;margin:8px;display:inline-block}}
+.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:15px}}
+.stat{{background:#142848;padding:20px;border-radius:12px;font-size:24px}}
+table{{width:100%;border-collapse:collapse;font-size:14px}}th,td{{padding:10px;border-bottom:1px solid #333;text-align:left}}
+</style></head><body>
+<div class="header">SOGRACE CRM V2.4</div>
+<div class="container">
+
+<div class="grid">
+<div class="stat">Total<br>{total}</div><div class="stat">NEW<br>{new}</div>
+<div class="stat">CONTACTED<br>{contacted}</div><div class="stat">ORDERED<br>{ordered}</div>
+</div>
+
+<div class="card"><h2>Add Lead</h2>
+<form action="/add" method="post">
+<input name="company" placeholder="Company"><input name="contact" placeholder="Contact">
+<input name="email" placeholder="Email"><input name="website" placeholder="Website">
+<input name="country" placeholder="Country"><input name="whatsapp" placeholder="WhatsApp">
+<input name="source" placeholder="Source">
+<select name="category"><option>ELDERLY</option><option>PET</option><option>PLATFORM</option><option>DISTRIBUTOR</option></select>
+<button>Add Lead</button></form></div>
+
+<div class="card"><h2>Search / Import / Export</h2>
+<form action="/" method="get"><input name="q" placeholder="Search" value="{q}">
+<button>Search</button><a class="export" href="/">Reset</a><a class="export" href="/export">Export CSV</a></form>
+<form action="/import" method="post" enctype="multipart/form-data"><input type="file" name="file" accept=".csv"><button>Import CSV</button></form>
+</div>
+
+<div class="card"><h2>Lead List</h2>
+<table><tr><th>Company</th><th>Contact</th><th>Email</th><th>Country</th><th>WhatsApp</th><th>Category</th><th>Source</th><th>Level</th><th>Owner</th><th>Next Follow</th><th>Status</th><th>Note</th><th>Action</th></tr>
+{rows}</table></div>
+</div></body></html>
+"""
+
+@app.get("/lead/{lead_id}", response_class=HTMLResponse)
+def lead_detail(lead_id:int):
+    conn = db()
+    l = conn.execute("SELECT id,company,contact,email,website,country,whatsapp,category,source,status,note,level,owner,next_followup,history FROM leads WHERE id=?", (lead_id,)).fetchone()
+    conn.close()
+    if not l:
+        return "Lead not found"
+    return f"""
+<html><head><title>{l[1]}</title><style>
+body{{font-family:Arial;background:#07111f;color:white;padding:30px}}
+.card{{background:#111d33;padding:20px;border-radius:12px;margin-bottom:20px}}
+input,select,textarea{{padding:10px;margin:6px;border-radius:6px;border:0;width:300px}}
+button{{padding:10px 16px;background:#1683ff;color:white;border:0;border-radius:6px}}
+a{{color:white}}
+</style></head><body>
+<h1>{l[1]}</h1><a href="/">Back</a>
+<div class="card">
+<p>Contact: {l[2]}</p><p>Email: {l[3]}</p><p>Website: {l[4]}</p><p>Country: {l[5]}</p><p>WhatsApp: {l[6]}</p>
+</div>
+<div class="card"><h2>Update Follow Up</h2>
+<form action="/followup/{l[0]}" method="post">
+<select name="level"><option>{l[11]}</option><option>A</option><option>B</option><option>C</option><option>D</option></select>
+<input name="owner" value="{l[12] or ''}" placeholder="Owner">
+<input name="next_followup" value="{l[13] or ''}" placeholder="2026-06-15">
+<textarea name="history" rows="4" placeholder="New follow up record"></textarea><br>
+<button>Save Follow Up</button>
+</form></div>
+<div class="card"><h2>History</h2><pre>{l[14] or ''}</pre></div>
+</body></html>
+"""
+
+@app.post("/add")
+def add_lead(company:str=Form(...),contact:str=Form(""),email:str=Form(...),website:str=Form(""),country:str=Form(""),whatsapp:str=Form(""),source:str=Form(""),category:str=Form(...)):
+    conn=db()
+    conn.execute("INSERT INTO leads (company,email,website,category,status,note,country,contact,whatsapp,source,level,owner,next_followup,history) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    (company,email,website,category,"NEW","",country,contact,whatsapp,source,"C","","",""))
+    conn.commit(); conn.close()
+    return RedirectResponse("/",303)
+
+@app.post("/followup/{lead_id}")
+def followup(lead_id:int, level:str=Form("C"), owner:str=Form(""), next_followup:str=Form(""), history:str=Form("")):
+    conn=db()
+    old = conn.execute("SELECT history FROM leads WHERE id=?", (lead_id,)).fetchone()
+    old_history = old[0] if old and old[0] else ""
+    if history:
+        today = datetime.date.today().isoformat()
+        old_history = old_history + f"\\n{today} {history}"
+    conn.execute("UPDATE leads SET level=?, owner=?, next_followup=?, history=? WHERE id=?", (level,owner,next_followup,old_history,lead_id))
+    conn.commit(); conn.close()
+    return RedirectResponse(f"/lead/{lead_id}",303)
+
+@app.post("/status/{lead_id}")
+def update_status(lead_id:int,status:str=Form(...)):
+    conn=db(); conn.execute("UPDATE leads SET status=? WHERE id=?", (status,lead_id)); conn.commit(); conn.close()
+    return RedirectResponse("/",303)
+
+@app.post("/note/{lead_id}")
+def update_note(lead_id:int,note:str=Form("")):
+    conn=db(); conn.execute("UPDATE leads SET note=? WHERE id=?", (note,lead_id)); conn.commit(); conn.close()
+    return RedirectResponse("/",303)
+
+@app.get("/delete/{lead_id}")
+def delete_lead(lead_id:int):
+    conn=db(); conn.execute("DELETE FROM leads WHERE id=?", (lead_id,)); conn.commit(); conn.close()
+    return RedirectResponse("/",303)
+
+@app.get("/export")
+def export_csv():
+    conn=db()
+    rows=conn.execute("SELECT company,contact,email,website,country,whatsapp,category,source,status,note,level,owner,next_followup,history FROM leads ORDER BY id DESC").fetchall()
+    conn.close()
+    output=io.StringIO(); writer=csv.writer(output)
+    writer.writerow(["Company","Contact","Email","Website","Country","WhatsApp","Category","Source","Status","Note","Level","Owner","NextFollowup","History"])
+    writer.writerows(rows); output.seek(0)
+    return StreamingResponse(iter([output.getvalue()]),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=sograce_crm_v24_leads.csv"})
+
+@app.post("/import")
+async def import_csv(file: UploadFile = File(...)):
+    content=await file.read()
+    reader=csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+    conn=db()
+    for r in reader:
+        conn.execute("INSERT INTO leads (company,contact,email,website,country,whatsapp,category,source,status,note,level,owner,next_followup,history) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (r.get("Company",""),r.get("Contact",""),r.get("Email",""),r.get("Website",""),r.get("Country",""),r.get("WhatsApp",""),r.get("Category","ELDERLY"),r.get("Source",""),r.get("Status","NEW"),r.get("Note",""),r.get("Level","C"),r.get("Owner",""),r.get("NextFollowup",""),r.get("History","")))
+    conn.commit(); conn.close()
+    return RedirectResponse("/",303)

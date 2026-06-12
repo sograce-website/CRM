@@ -1,0 +1,25 @@
+#!/bin/bash
+echo "=== 1. backup current main.py ==="
+cp main.py main_broken_backup_$(date +%Y%m%d_%H%M).py
+
+echo "=== 2. restore v43 ==="
+cp main_v43_professional.py main.py
+
+echo "=== 3. remove python cache ==="
+rm -rf __pycache__
+
+echo "=== 4. compile ==="
+python3 -m py_compile main.py
+
+echo "=== 5. restart CRM service ==="
+sudo systemctl restart crm
+sleep 3
+
+echo "=== 6. check status ==="
+sudo systemctl status crm --no-pager
+
+echo "=== 7. test /login ==="
+curl -s http://127.0.0.1:8000/login | head -20
+
+echo "=== 8. test home ==="
+curl -s http://127.0.0.1:8000/ | head -20

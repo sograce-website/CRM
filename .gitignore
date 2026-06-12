@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.sqlite
+*.sqlite3
+*.log
+.env
+crm.db
+lead_collect.log
+dashboard_v44.log
+*_backup_*.py
+main_before_*.py
+dashboard_v44_backup_*.py
