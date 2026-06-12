@@ -213,108 +213,202 @@ def home(request: Request, q: str = ""):
         """
 
     return f"""
-<html><head><title>SOGRACE CRM V4.1 Web Control Center</title>
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SOGRACE CRM V5.0 Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body{{font-family:Arial;background:#07111f;color:white;margin:0}}
-.header{{background:#0b1f3a;padding:20px;font-size:28px;font-weight:bold}}
-.container{{padding:30px}}.card{{background:#111d33;padding:20px;border-radius:12px;margin-bottom:20px}}
-input,select,textarea{{padding:10px;margin:6px;border-radius:6px;border:0}}
-button{{padding:10px 16px;background:#1683ff;color:white;border:0;border-radius:6px}}
-.timeline-item{{background:#0b1f3a;margin:8px 0;padding:12px;border-left:4px solid #1683ff;border-radius:6px}}
-a{{color:white}}.delete{{background:#d93333;padding:8px 12px;border-radius:6px;text-decoration:none}}
-.export{{background:#0bbf7a;padding:10px 18px;border-radius:6px;text-decoration:none;margin:8px;display:inline-block}}
-.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:15px}}
-.stat{{background:#142848;padding:20px;border-radius:12px;font-size:24px}}
-table{{width:100%;border-collapse:collapse;font-size:14px}}th,td{{padding:10px;border-bottom:1px solid #333;text-align:left}}
-</style></head><body>
-<div class="header">SOGRACE CRM V4.1 Web Control Center <a style="float:right;font-size:16px" href="/logout">Logout</a></div>
-<div class="container">
+:root{{
+  --bg:#07111f;
+  --panel:#0f1d33;
+  --panel2:#132846;
+  --line:rgba(255,255,255,.08);
+  --text:#f8fafc;
+  --muted:#94a3b8;
+  --blue:#2f83ff;
+  --green:#0bbf7a;
+  --red:#ef4444;
+  --orange:#f59e0b;
+}}
+*{{box-sizing:border-box}}
+body{{font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);margin:0}}
+a{{color:inherit;text-decoration:none}}
+.layout{{display:grid;grid-template-columns:250px 1fr;min-height:100vh}}
+.sidebar{{background:#050b14;border-right:1px solid var(--line);padding:22px 18px;position:sticky;top:0;height:100vh}}
+.brand{{font-size:22px;font-weight:800;letter-spacing:.5px;margin-bottom:6px}}
+.version{{color:var(--muted);font-size:13px;margin-bottom:26px}}
+.nav a{{display:block;padding:12px 14px;margin:7px 0;border-radius:12px;color:#dbeafe}}
+.nav a:hover,.nav .active{{background:linear-gradient(135deg,#1d4ed8,#2563eb);color:white}}
+.main{{padding:24px}}
+.topbar{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}
+.title h1{{margin:0;font-size:30px}}
+.title p{{margin:6px 0 0;color:var(--muted)}}
+.logout{{background:#1e293b;padding:10px 14px;border-radius:10px}}
+.grid{{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:16px;margin-bottom:18px}}
+.card{{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:0 18px 40px rgba(0,0,0,.22)}}
+.card .label{{color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.7px}}
+.card .num{{font-size:30px;font-weight:800;margin-top:8px}}
+.card.blue{{background:linear-gradient(135deg,#1d4ed8,#0f1d33)}}
+.card.green{{background:linear-gradient(135deg,#047857,#0f1d33)}}
+.card.orange{{background:linear-gradient(135deg,#b45309,#0f1d33)}}
+.card.red{{background:linear-gradient(135deg,#991b1b,#0f1d33)}}
+.section{{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px;margin:18px 0;box-shadow:0 18px 40px rgba(0,0,0,.2)}}
+.section h2{{margin:0 0 14px;font-size:20px}}
+.actions{{display:flex;flex-wrap:wrap;gap:10px}}
+.btn,.export{{display:inline-block;background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;border:0}}
+.btn.green,.export.green{{background:var(--green)}}
+.btn.orange,.export.orange{{background:var(--orange)}}
+.btn.red{{background:var(--red)}}
+input,select,textarea{{padding:10px;margin:5px;border-radius:10px;border:1px solid var(--line);background:#0b1628;color:white}}
+input::placeholder,textarea::placeholder{{color:#94a3b8}}
+button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:10px;cursor:pointer}}
+.table-wrap{{overflow:auto;max-height:620px;border-radius:14px;border:1px solid var(--line)}}
+table{{width:100%;border-collapse:collapse;font-size:13px;background:#0b1628}}
+th{{position:sticky;top:0;background:#111d33;color:#cbd5e1;z-index:1}}
+th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}}
+tr:hover{{filter:brightness(1.12)}}
+.delete{{background:#dc2626;padding:8px 12px;border-radius:8px}}
+.two{{display:grid;grid-template-columns:1fr 1fr;gap:18px}}
+.notice p{{margin:8px 0;color:#dbeafe}}
+.small{{font-size:13px;color:var(--muted)}}
+@media(max-width:1100px){{
+  .layout{{grid-template-columns:1fr}}
+  .sidebar{{position:relative;height:auto}}
+  .grid{{grid-template-columns:repeat(2,1fr)}}
+  .two{{grid-template-columns:1fr}}
+}}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">SOGRACE CRM</div>
+    <div class="version">V5.0 Dashboard Edition</div>
+    <div class="nav">
+      <a class="active" href="/">📊 Dashboard</a>
+      <a href="#leads">👥 Lead List</a>
+      <a href="#add">➕ Add Lead</a>
+      <a href="/email_center">📧 Email Center</a>
+      <a href="/auto_collect">🤖 Auto Collect</a>
+      <a href="/lead_collect_log">📄 Collector Log</a>
+      <a href="/user_management">⚙️ User Management</a>
+      <a href="/export">⬇ Export CSV</a>
+    </div>
+  </aside>
 
-<div class="grid">
-<div class="stat">TOTAL<br>{stats_data["TOTAL"]}</div>
-<div class="stat">NEW<br>{stats_data["NEW"]}</div>
-<div class="stat">CONTACTED<br>{stats_data["CONTACTED"]}</div>
-<div class="stat">QUOTED<br>{stats_data["QUOTED"]}</div>
-<div class="stat">SAMPLE<br>{stats_data["SAMPLE"]}</div>
-<div class="stat">NEGOTIATION<br>{stats_data["NEGOTIATION"]}</div>
-<div class="stat">ORDERED<br>{stats_data["ORDERED"]}</div>
-<div class="stat">LOST<br>{stats_data["LOST"]}</div>
-<div class="stat">PIPELINE VALUE<br>${pipeline_value:,.0f}</div>
-<div class="stat">QUOTE RATE<br>{quote_rate}%</div>
-<div class="stat">ORDER RATE<br>{order_rate}%</div>
+  <main class="main">
+    <div class="topbar">
+      <div class="title">
+        <h1>Business Control Dashboard</h1>
+        <p>Lead pipeline, follow-up reminders, auto collection and email sending status.</p>
+      </div>
+      <a class="logout" href="/logout">Logout</a>
+    </div>
 
-<div class="card">
-<h2>📊 Lead Count Ranking</h2>
-{sales_ranking_html}
+    <div class="grid">
+      <div class="card blue"><div class="label">Total Leads</div><div class="num">{stats_data["TOTAL"]}</div></div>
+      <div class="card"><div class="label">New</div><div class="num">{stats_data["NEW"]}</div></div>
+      <div class="card"><div class="label">Contacted</div><div class="num">{stats_data["CONTACTED"]}</div></div>
+      <div class="card"><div class="label">Quoted</div><div class="num">{stats_data["QUOTED"]}</div></div>
+      <div class="card green"><div class="label">Ordered</div><div class="num">{stats_data["ORDERED"]}</div></div>
+
+      <div class="card"><div class="label">Sample</div><div class="num">{stats_data["SAMPLE"]}</div></div>
+      <div class="card"><div class="label">Negotiation</div><div class="num">{stats_data["NEGOTIATION"]}</div></div>
+      <div class="card red"><div class="label">Lost</div><div class="num">{stats_data["LOST"]}</div></div>
+      <div class="card orange"><div class="label">Pipeline Value</div><div class="num">${pipeline_value:,.0f}</div></div>
+      <div class="card"><div class="label">Quote / Order Rate</div><div class="num">{quote_rate}% / {order_rate}%</div></div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><div class="label">Today Follow Up</div><div class="num">{len(today_items)}</div></div>
+      <div class="card red"><div class="label">Overdue Follow Up</div><div class="num">{len(overdue_items)}</div></div>
+      <div class="card"><div class="label">Auto Collect</div><div class="num">Ready</div></div>
+      <div class="card"><div class="label">Auto Email</div><div class="num">Ready</div></div>
+      <div class="card"><div class="label">Login User</div><div class="num" style="font-size:24px">{username}</div></div>
+    </div>
+
+    <div class="section">
+      <h2>Quick Actions</h2>
+      <div class="actions">
+        <a class="btn green" href="#add">Add Lead</a>
+        <a class="btn" href="#leads">Lead List</a>
+        <a class="btn" href="/email_center">Email Center</a>
+        <a class="btn" href="/user_management">User Management</a>
+        <a class="btn orange" href="/auto_collect">Auto Collect Leads</a>
+        <a class="btn" href="/auto_send/50">Auto Send 50</a>
+        <a class="btn" href="/auto_send/100">Auto Send 100</a>
+        <a class="btn" href="/bulk_send/50">Send 50</a>
+        <a class="btn" href="/bulk_send/100">Send 100</a>
+      </div>
+    </div>
+
+    <div class="two">
+      <div class="section notice">
+        <h2>Follow Up Reminder</h2>
+        <h3>Today</h3>
+        {''.join([f'<p><a href="/lead/{x[0]}">{x[1]}</a> | Owner: {x[2]} | Date: {x[3]}</p>' for x in today_items]) or '<p class="small">No follow up today.</p>'}
+        <h3 style="color:#ff9999">Overdue</h3>
+        {''.join([f'<p style="color:#ffb4b4"><a href="/lead/{x[0]}">{x[1]}</a> | Owner: {x[2]} | Date: {x[3]}</p>' for x in overdue_items]) or '<p class="small">No overdue follow up.</p>'}
+      </div>
+
+      <div class="section">
+        <h2>Sales Ranking</h2>
+        <h3>Lead Count</h3>
+        {sales_ranking_html}
+        <h3>Pipeline Value</h3>
+        {money_ranking_html}
+      </div>
+    </div>
+
+    <div id="add" class="section">
+      <h2>Add Lead</h2>
+      <form action="/add" method="post">
+        <input name="company" placeholder="Company">
+        <input name="contact" placeholder="Contact">
+        <input name="email" placeholder="Email">
+        <input name="website" placeholder="Website">
+        <input name="country" placeholder="Country">
+        <input name="whatsapp" placeholder="WhatsApp">
+        <input name="source" placeholder="Source">
+        <select name="category"><option>ELDERLY</option><option>PET</option><option>PLATFORM</option><option>DISTRIBUTOR</option></select>
+        <button>Add Lead</button>
+      </form>
+    </div>
+
+    <div class="section">
+      <h2>Search / Import / Export</h2>
+      <form action="/" method="get" style="display:inline-block">
+        <input name="q" placeholder="Search company / email / country" value="{q}">
+        <button>Search</button>
+      </form>
+      <a class="export" href="/">Reset</a>
+      <a class="export green" href="/export">Export CSV</a>
+      <form action="/import" method="post" enctype="multipart/form-data" style="margin-top:14px">
+        <input type="file" name="file" accept=".csv"><button>Import CSV</button>
+      </form>
+    </div>
+
+    <div id="leads" class="section">
+      <h2>Lead List</h2>
+      <div class="table-wrap">
+        <table>
+          <tr>
+            <th>Company</th><th>Contact</th><th>Email</th><th>Country</th><th>WhatsApp</th>
+            <th>Category</th><th>Source</th><th>Product</th><th>Value</th><th>Last Contact</th>
+            <th>Expected Amount</th><th>Quick Update</th><th>Action</th>
+          </tr>
+          {rows}
+        </table>
+      </div>
+    </div>
+  </main>
 </div>
-
-<div class="card">
-<h2>🏆 Sales Amount Ranking</h2>
-{money_ranking_html}
-</div>
-</div>
-
-<div class="card"><h2>Follow Up Reminder</h2>
-<h3>Today Follow Up</h3>
-{''.join([f'<p><a href="/lead/{x[0]}">{x[1]}</a> | Owner: {x[2]} | Date: {x[3]}</p>' for x in today_items]) or '<p>No follow up today.</p>'}
-<h3 style="color:#ff5555">Overdue Follow Up</h3>
-{''.join([f'<p style="color:#ff9999"><a href="/lead/{x[0]}">{x[1]}</a> | Owner: {x[2]} | Date: {x[3]}</p>' for x in overdue_items]) or '<p>No overdue follow up.</p>'}
-</div>
-
-<div class="card"><h2>Sales Ranking</h2>
-<h3>Lead Count</h3>
-{sales_ranking_html}
-<h3>Pipeline Value</h3>
-{money_ranking_html}
-</div>
-
-<div class="card"><h2>Add Lead</h2>
-<form action="/add" method="post">
-<input name="company" placeholder="Company"><input name="contact" placeholder="Contact">
-<input name="email" placeholder="Email"><input name="website" placeholder="Website">
-<input name="country" placeholder="Country"><input name="whatsapp" placeholder="WhatsApp">
-<input name="source" placeholder="Source">
-<select name="category"><option>ELDERLY</option><option>PET</option><option>PLATFORM</option><option>DISTRIBUTOR</option></select>
-<button>Add Lead</button></form></div>
-
-
-<a class="btn" href="/auto_send/50">Auto Send 50</a>
-<a class="btn" href="/auto_send/100">Auto Send 100</a>
-<a class="btn" href="/auto_pipeline/50">Auto Pipeline 50</a>
-<a class="btn" href="/auto_pipeline/100">Auto Pipeline 100</a>
-
-<div class="card"><h2>Automation Status (V4.2 Professional)</h2>
-<p>Auto Collect: Running / Idle (see lead_collect_log)</p>
-<p>Auto Send: Ready / Sent / Failed (see Email Center)</p>
-<p>Pipeline: check pipeline.log for last execution</p>
-</div>
-<div class="card"><h2>Search / Import / Export / Automation</h2>
-<form action="/" method="get" style="display:inline-block">
-<input name="q" placeholder="Search" value="{q}">
-<button>Search</button>
-</form>
-<a class="export" href="/">Reset</a>
-<a class="export" href="/export">Export CSV</a><a class="export" href="/user_management">👥 Users</a><a class="export" href="http://8.219.139.140:8012/dashboard" target="_blank">📊 Dashboard</a>
-
-
-<a class="export" href="/bulk_send/50">Send 50</a>
-<a class="export" href="/bulk_send/100">Send 100</a>
-<a class="export" href="/auto_collect">Auto Collect Leads</a>
-<a class="export" href="/lead_collect_log">Collector Log</a>
-<a class="export" href="/download_auto_leads">Download Leads</a>
-<a class="export" href="/email_center">Email Center</a>
-<a class="export" href="/auto_send/50">Auto Send 50</a>
-<a class="export" href="/auto_send/100">Auto Send 100</a>
-<form action="/import" method="post" enctype="multipart/form-data" style="margin-top:20px">
-<input type="file" name="file" accept=".csv"><button>Import CSV</button>
-</form>
-</div>
-
-<div class="card"><h2>Lead List</h2>
-<table><tr><th>Company</th><th>Contact</th><th>Email</th><th>Country</th><th>WhatsApp</th><th>Category</th><th>Source</th><th>Product</th><th>Value</th><th>Last Contact</th><th>Expected Amount</th><th>Quick Update</th><th>Action</th></tr>
-{rows}</table></div>
-</div></body></html>
+</body>
+</html>
 """
+
 
 
 @app.post("/quick/{lead_id}")
