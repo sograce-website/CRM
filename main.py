@@ -980,8 +980,8 @@ def auto_collect(request: Request, background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_auto_collector)
 
     return HTMLResponse("""
-    <h2>Auto Lead Collector V5.1 Started</h2>
-    <p>V5.1 自动采集任务已经启动，后台正在搜索客户并更新状态日志。</p>
+    <h2>Auto Lead Collector V5.2 Pro Started</h2>
+    <p>V5.2 Pro 自动采集任务已经启动，后台正在搜索客户并更新状态日志。</p>
     <p>完成后会写入 auto_leads.csv 和 CRM 数据库。</p>
     <p><a href="/">Back to CRM</a></p>
     <p><a href="/download_auto_leads">Download auto_leads.csv</a></p>
@@ -1098,7 +1098,7 @@ def email_center(request: Request):
     return HTMLResponse(f"""
     <html>
     <head>
-    <title>SOGRACE CRM V5.1 Email Center</title>
+    <title>SOGRACE CRM V5.2 Email Center</title>
     <style>
     body{{font-family:Arial;background:#07111f;color:white;margin:0;padding:30px}}
     .card{{background:#111d33;padding:20px;border-radius:12px;margin-bottom:20px}}
@@ -1112,12 +1112,12 @@ def email_center(request: Request):
     </style>
     </head>
     <body>
-    <h1>📧 SOGRACE CRM V5.1 Email Center</h1>
+    <h1>📧 SOGRACE CRM V5.2 Email Center</h1>
     <p>
       <a class="btn" href="/">Back CRM</a>
       <a class="btn" href="/auto_collect">Auto Collect</a>
       <a class="btn" href="/lead_collect_log">Collector Log</a>
-      <a class="btn" href="/v51_status">V5.1 Status</a>
+      <a class="btn" href="/v51_status">V5.2 Status</a>
       <a class="btn" href="/reply_center">Reply Center</a>
       
       
