@@ -3,8 +3,9 @@ from pathlib import Path as FilePath
 from fastapi import BackgroundTasks, Path as ApiPath, FastAPI, Form, UploadFile, File, Request
 import re
 import subprocess
+import html
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-import sqlite3, csv, io, datetime
+import sqlite3, csv, io, datetime, json
 import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
@@ -53,6 +54,107 @@ def init_db():
     conn.close()
 
 init_db()
+
+
+# ===== CRM V5.1 LIVE STATUS HELPERS START =====
+CRM_DIR = FilePath("/home/admin/crm")
+V51_STATUS_FILE = CRM_DIR / "v51_status.txt"
+V51_COLLECT_LOG = CRM_DIR / "lead_collector.log"
+V13_COLLECT_STATUS = CRM_DIR / "auto_collect_status.json"
+V13_COLLECT_LOG = CRM_DIR / "auto_collect_new.log"
+V51_EMAIL_LOG = CRM_DIR / "auto_send_v40.log"
+
+def _v51_safe_read(path, limit=8000):
+    try:
+        p = FilePath(path)
+        if not p.exists():
+            return ""
+        return p.read_text(encoding="utf-8", errors="ignore")[-limit:]
+    except Exception:
+        return ""
+
+def _v51_today_count_from_text(text):
+    today = datetime.date.today().isoformat()
+    return text.count(today)
+
+def _v51_email_numbers():
+    text = _v51_safe_read(V51_EMAIL_LOG, 12000) + "\n" + _v51_safe_read(CRM_DIR / "crm_bulk_send.log", 12000)
+    sent = len(re.findall(r"\b(SENT|Sent|Bulk Email Sent|OK:)\b", text))
+    failed = len(re.findall(r"\b(FAILED|Failed|Bulk Email Failed|ERROR)\b", text))
+    status = "Ready"
+    if "ERROR" in text[-1000:] or "Failed" in text[-1000:]:
+        status = "Check Log"
+    if "Bulk Send Finished" in text[-2000:] or "Sent" in text[-2000:]:
+        status = "Ready"
+    return {"status": status, "sent": sent, "failed": failed, "message": "Email log loaded"}
+
+def _v51_collect_numbers():
+    """
+    V5.1 P1 status patch:
+    Read AUTO COLLECT V1.3 status from auto_collect_status.json first.
+    Fallback to old lead_collector.log if the JSON file does not exist.
+    """
+    # New V1.3 collector status
+    try:
+        if V13_COLLECT_STATUS.exists():
+            data = json.loads(V13_COLLECT_STATUS.read_text(encoding="utf-8", errors="ignore"))
+            raw_status = str(data.get("status", "ready")).lower()
+            status_map = {
+                "running": "RUNNING",
+                "finished": "FINISHED",
+                "ready": "READY",
+                "error": "CHECK LOG",
+                "failed": "CHECK LOG"
+            }
+            status = status_map.get(raw_status, raw_status.upper() if raw_status else "READY")
+            return {
+                "status": status,
+                "found": int(data.get("found", 0) or 0),
+                "saved": int(data.get("saved", 0) or 0),
+                "skipped": int(data.get("skipped", 0) or 0),
+                "failed": int(data.get("failed", 0) or 0),
+                "today": _v51_today_count_from_text(_v51_safe_read(V13_COLLECT_LOG, 12000)),
+                "keyword": data.get("current_keyword", ""),
+                "site": data.get("current_site", ""),
+                "updated": data.get("updated", ""),
+                "message": data.get("message", "AUTO COLLECT V1.3 status loaded")
+            }
+    except Exception as e:
+        return {
+            "status": "CHECK LOG",
+            "found": 0,
+            "saved": 0,
+            "skipped": 0,
+            "failed": 1,
+            "today": 0,
+            "message": "V1.3 status read error: " + str(e)
+        }
+
+    # Old V5.1 fallback
+    text = _v51_safe_read(V51_COLLECT_LOG, 12000)
+    found = len(re.findall(r"(@|Saved|FOUND|Found|saved)", text))
+    status = "READY"
+    if "ERROR" in text[-1000:] or "Traceback" in text[-1000:]:
+        status = "CHECK LOG"
+    return {"status": status, "found": found, "saved": 0, "skipped": 0, "failed": 0, "today": _v51_today_count_from_text(text), "message": "Old collector log loaded"}
+
+def _v51_status_snapshot():
+    collect = _v51_collect_numbers()
+    email = _v51_email_numbers()
+    return {
+        "collect": collect,
+        "email": email,
+        "updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+def _v51_write_status(kind, status, message=""):
+    try:
+        V51_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with V51_STATUS_FILE.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {kind} | {status} | {message}\n")
+    except Exception:
+        pass
+# ===== CRM V5.1 LIVE STATUS HELPERS END =====
 
 def stats():
     conn = db()
@@ -173,6 +275,14 @@ def home(request: Request, q: str = ""):
     sales_ranking_html = "".join([f"<p>{r[0]}: {r[1]} Leads</p>" for r in sales_rows]) or "<p>No data</p>"
     money_ranking_html = "".join([f"<p>{r[0]}: ${float(r[1] or 0):,.0f}</p>" for r in money_rows]) or "<p>No data</p>"
 
+    v51_status = _v51_status_snapshot()
+    v51_collect_status = v51_status["collect"]["status"]
+    v51_collect_found = v51_status["collect"]["found"]
+    v51_collect_today = v51_status["collect"]["today"]
+    v51_email_status = v51_status["email"]["status"]
+    v51_email_sent = v51_status["email"]["sent"]
+    v51_email_failed = v51_status["email"]["failed"]
+
 
     rows = ""
     today = datetime.date.today().isoformat()
@@ -216,7 +326,7 @@ def home(request: Request, q: str = ""):
         </tr>
         """
 
-    # V5.0 dynamic dashboard calculations
+    # V5.1 dynamic dashboard calculations
     status_order = ["NEW","CONTACTED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]
     max_stage = max([stats_data.get(x,0) for x in status_order] + [1])
 
@@ -251,7 +361,7 @@ def home(request: Request, q: str = ""):
 <html>
 <head>
 <meta charset="utf-8">
-<title>SOGRACE CRM V5.0 Professional Dashboard</title>
+<title>SOGRACE CRM V5.1 Professional Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root{{
@@ -309,7 +419,7 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
 <div class="layout">
   <aside class="sidebar">
     <div class="logo">SOGRACE CRM</div>
-    <div class="ver">V5.0 Professional</div>
+    <div class="ver">V5.1 Professional</div>
     <div class="nav">
       <a class="active" href="/">📊 Dashboard</a>
       <a href="#leads">👥 Recent Leads</a>
@@ -317,6 +427,8 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
       <a href="/email_center">📧 Email Center</a>
       <a href="/auto_collect">🤖 Auto Collect</a>
       <a href="/lead_collect_log">📄 Collector Log</a>
+      <a href="/v51_status">📡 V5.1 Status</a>
+      <a href="/reply_center">💬 Reply Center</a>
       <a href="/user_management">⚙️ Users</a>
       <a href="/export">⬇ Export</a>
       <a href="/logout">🚪 Logout</a>
@@ -348,8 +460,8 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
     <div class="grid">
       <div class="card"><div class="label">Today Follow Up</div><div class="num">{len(today_items)}</div></div>
       <div class="card red"><div class="label">Overdue Follow Up</div><div class="num">{len(overdue_items)}</div></div>
-      <div class="card"><div class="label">Auto Collect</div><div class="num">Ready</div></div>
-      <div class="card"><div class="label">Auto Email</div><div class="num">Ready</div></div>
+      <div class="card"><div class="label">Auto Collect</div><div class="num">{v51_collect_status}</div><div class="small">Found: {v51_collect_found} · Saved: {v51_status["collect"].get("saved",0)} · Skipped: {v51_status["collect"].get("skipped",0)}</div></div>
+      <div class="card"><div class="label">Auto Email</div><div class="num">{v51_email_status}</div><div class="small">Sent: {v51_email_sent} · Failed: {v51_email_failed}</div></div>
       <div class="card"><div class="label">Visible Leads</div><div class="num">{len(leads)}</div></div>
     </div>
 
@@ -359,6 +471,8 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
         <a class="btn green" href="#add">Add Lead</a>
         <a class="btn" href="#leads">Recent Leads</a>
         <a class="btn" href="/email_center">Email Center</a>
+        <a class="btn" href="/v51_status">V5.1 Status</a>
+        <a class="btn" href="/reply_center">Reply Center</a>
         <a class="btn" href="/user_management">User Management</a>
         <a class="btn orange" href="/auto_collect">Auto Collect Leads</a>
         <a class="btn" href="/auto_send/50">Auto Send 50</a>
@@ -958,14 +1072,25 @@ def _bulk_send_worker(count: int):
 
 # ===== AUTO LEAD COLLECTOR START =====
 def _run_auto_collector():
-    import subprocess
-    subprocess.run(
-        ["./venv/bin/python", "lead_collector_v40.py"],
-        cwd="/home/admin/crm",
-        stdout=open("/home/admin/crm/lead_collector.log", "a"),
-        stderr=open("/home/admin/crm/lead_collector.log", "a"),
-        timeout=1800
-    )
+    import subprocess, os
+    crm_dir = "/home/admin/crm"
+    v13 = os.path.join(crm_dir, "auto_collect_v13_global.py")
+    if os.path.exists(v13):
+        subprocess.run(
+            ["./venv/bin/python", "auto_collect_v13_global.py"],
+            cwd=crm_dir,
+            stdout=open("/home/admin/crm/auto_collect_new.log", "a"),
+            stderr=open("/home/admin/crm/auto_collect_new.log", "a"),
+            timeout=7200
+        )
+    else:
+        subprocess.run(
+            ["./venv/bin/python", "lead_collector.py"],
+            cwd=crm_dir,
+            stdout=open("/home/admin/crm/lead_collector.log", "a"),
+            stderr=open("/home/admin/crm/lead_collector.log", "a"),
+            timeout=1800
+        )
 
 @app.get("/auto_collect", response_class=HTMLResponse)
 def auto_collect(request: Request, background_tasks: BackgroundTasks):
@@ -977,11 +1102,12 @@ def auto_collect(request: Request, background_tasks: BackgroundTasks):
     if role != "admin":
         return HTMLResponse("<h2>Access Denied</h2>")
 
+    _v51_write_status("collect", "Started", "Auto Collect clicked")
     background_tasks.add_task(_run_auto_collector)
 
     return HTMLResponse("""
-    <h2>Auto Lead Collector V5.2 Pro Started</h2>
-    <p>V5.2 Pro 自动采集任务已经启动，后台正在搜索客户并更新状态日志。</p>
+    <h2>Auto Lead Collector Started</h2>
+    <p>客户自动采集任务已经启动，后台正在搜索客户。</p>
     <p>完成后会写入 auto_leads.csv 和 CRM 数据库。</p>
     <p><a href="/">Back to CRM</a></p>
     <p><a href="/download_auto_leads">Download auto_leads.csv</a></p>
@@ -1098,7 +1224,7 @@ def email_center(request: Request):
     return HTMLResponse(f"""
     <html>
     <head>
-    <title>SOGRACE CRM V5.2 Email Center</title>
+    <title>SOGRACE CRM V4.1 Email Center</title>
     <style>
     body{{font-family:Arial;background:#07111f;color:white;margin:0;padding:30px}}
     .card{{background:#111d33;padding:20px;border-radius:12px;margin-bottom:20px}}
@@ -1112,13 +1238,11 @@ def email_center(request: Request):
     </style>
     </head>
     <body>
-    <h1>📧 SOGRACE CRM V5.2 Email Center</h1>
+    <h1>📧 SOGRACE CRM V4.1 Email Center</h1>
     <p>
       <a class="btn" href="/">Back CRM</a>
       <a class="btn" href="/auto_collect">Auto Collect</a>
       <a class="btn" href="/lead_collect_log">Collector Log</a>
-      <a class="btn" href="/v51_status">V5.2 Status</a>
-      <a class="btn" href="/reply_center">Reply Center</a>
       
       
       
@@ -1175,6 +1299,7 @@ def auto_send_web(request: Request, background_tasks: BackgroundTasks, count: in
     if role != "admin":
         return HTMLResponse("<h2>Access Denied</h2><p><a href='/'>Back</a></p>")
 
+    _v51_write_status("email", "Started", f"Auto Send {count} clicked")
     background_tasks.add_task(_auto_send_worker, count)
 
     return HTMLResponse(f"""
@@ -1375,3 +1500,100 @@ def user_delete(uid: int):
     conn.close()
     return RedirectResponse("/user_management", 303)
 # ===== USER MANAGEMENT V4.5 END =====
+
+
+# ===== CRM V5.1 LIVE STATUS ROUTES START =====
+@app.get("/api/v51/status")
+def api_v51_status(request: Request):
+    if not is_login(request):
+        return {"error": "login required"}
+    return _v51_status_snapshot()
+
+@app.get("/auto_collect_new_status")
+def auto_collect_new_status(request: Request):
+    if not is_login(request):
+        return {"error": "login required"}
+    return _v51_collect_numbers()
+
+@app.get("/auto_email_new_status")
+def auto_email_new_status(request: Request):
+    if not is_login(request):
+        return {"error": "login required"}
+    return _v51_email_numbers()
+
+@app.get("/v51_status", response_class=HTMLResponse)
+def v51_status_page(request: Request):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+    s = _v51_status_snapshot()
+    status_log = html.escape(_v51_safe_read(V51_STATUS_FILE, 12000) or "No V5.1 status log yet.")
+    collect_log = html.escape(_v51_safe_read(V51_COLLECT_LOG, 12000) or "No collector log yet.")
+    email_log = html.escape(_v51_safe_read(V51_EMAIL_LOG, 12000) or _v51_safe_read(CRM_DIR / "crm_bulk_send.log", 12000) or "No email log yet.")
+    return HTMLResponse(f"""
+    <html><head><title>SOGRACE CRM V5.1 Status</title>
+    <meta http-equiv="refresh" content="5">
+    <style>
+    body{{font-family:Arial;background:#07111f;color:white;margin:0;padding:25px}}
+    .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}}
+    .card{{background:#111d33;padding:18px;border-radius:12px;margin-bottom:16px}}
+    .num{{font-size:28px;font-weight:900}}
+    a{{color:white}} pre{{white-space:pre-wrap;background:#020617;padding:16px;border-radius:12px;max-height:360px;overflow:auto}}
+    </style></head><body>
+    <h1>SOGRACE CRM V5.1 Live Status</h1>
+    <p><a href="/">← Back Dashboard</a> | <a href="/lead_collect_log">Collector Log</a> | <a href="/email_center">Email Center</a> | <a href="/reply_center">Reply Center</a></p>
+    <div class="grid">
+      <div class="card">Auto Collect<br><div class="num">{s['collect']['status']}</div></div>
+      <div class="card">Collected Found<br><div class="num">{s['collect']['found']}</div></div>
+      <div class="card">Auto Email<br><div class="num">{s['email']['status']}</div></div>
+      <div class="card">Sent / Failed<br><div class="num">{s['email']['sent']} / {s['email']['failed']}</div></div>
+    </div>
+    <div class="card"><h2>V5.1 Status Log</h2><pre>{status_log}</pre></div>
+    <div class="card"><h2>Collector Log</h2><pre>{collect_log}</pre></div>
+    <div class="card"><h2>Email Log</h2><pre>{email_log}</pre></div>
+    </body></html>
+    """)
+
+@app.get("/reply_center", response_class=HTMLResponse)
+def reply_center_v51(request: Request):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+    username = request.cookies.get("crm_user")
+    role = get_user_role(username) or "sales"
+    conn = db()
+    if role == "admin":
+        rows = conn.execute("""
+            SELECT id,company,email,status,last_contact,note,owner
+            FROM leads
+            ORDER BY COALESCE(last_contact,'') DESC, id DESC
+            LIMIT 80
+        """).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT id,company,email,status,last_contact,note,owner
+            FROM leads
+            WHERE owner=?
+            ORDER BY COALESCE(last_contact,'') DESC, id DESC
+            LIMIT 80
+        """, (username,)).fetchall()
+    conn.close()
+    html_rows = ""
+    for r in rows:
+        html_rows += f"<tr><td><a href='/lead/{r[0]}'>{html.escape(str(r[1] or ''))}</a></td><td>{html.escape(str(r[2] or ''))}</td><td>{html.escape(str(r[3] or ''))}</td><td>{html.escape(str(r[4] or ''))}</td><td>{html.escape(str(r[6] or ''))}</td><td>{html.escape(str(r[5] or ''))}</td></tr>"
+    if not html_rows:
+        html_rows = "<tr><td colspan='6'>No reply data yet.</td></tr>"
+    return HTMLResponse(f"""
+    <html><head><title>Reply Center V5.1</title>
+    <style>
+    body{{font-family:Arial;background:#07111f;color:white;margin:0;padding:25px}}
+    .card{{background:#111d33;padding:20px;border-radius:12px}}
+    table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid rgba(255,255,255,.1);text-align:left}}
+    th{{background:#0b1f3a}} a{{color:white}}
+    </style></head><body>
+    <h1>Reply Center V5.1</h1>
+    <p><a href="/">← Back Dashboard</a> | <a href="/v51_status">V5.1 Status</a></p>
+    <div class="card"><table>
+    <tr><th>Company</th><th>Email</th><th>Status</th><th>Last Contact</th><th>Owner</th><th>Note</th></tr>
+    {html_rows}
+    </table></div></body></html>
+    """)
+# ===== CRM V5.1 LIVE STATUS ROUTES END =====
