@@ -1,7 +1,7 @@
 # lead_collector.py
 # SOGRACE CRM V5.2 Pro FINAL REAL Bing Lead Collector
 # Real search -> real websites -> email extraction -> CRM database.
-# No demo data. No example.com. No DuckDuckGo.
+# Real Bing search only.
 
 import csv
 import datetime as dt
@@ -57,7 +57,7 @@ BAD_DOMAINS = [
     "amazon.", "ebay.", "aliexpress.", "temu.", "wikipedia.", "reddit.", "pinterest.",
     "bing.com", "yahoo.", "baidu.", "github.", "medium.com", "trustpilot.", "crunchbase.",
     "zoominfo.", "dnb.com", "glassdoor.", "indeed.", "dictionary.", "merriam-webster.",
-    "cambridge.org", "bing.com",
+    "cambridge.org", 
 ]
 
 GOOD_WORDS = [
@@ -246,7 +246,7 @@ def extract_lead(url: str):
             emails.update(EMAIL_RE.findall(page_body))
     emails = [
         e.lower() for e in emails
-        if not any(x in e.lower() for x in ["", "domain.", "png", "jpg", "jpeg", "sentry", "wixpress"])
+        if not any(x in e.lower() for x in ["sample_blocked.", "domain.", "png", "jpg", "jpeg", "sentry", "wixpress"])
     ]
     score = score_site(final_url or url, title, body)
     domain = clean_domain(final_url or url)
