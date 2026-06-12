@@ -10,7 +10,7 @@ from email.mime.text import MIMEText
 from email.header import Header
 
 app = FastAPI()
-DB = "crm.db"
+DB = "/home/admin/crm/crm.db"
 
 SMTP_HOST = "smtp.qiye.aliyun.com"
 SMTP_PORT = 465
@@ -35,6 +35,7 @@ def is_login(request: Request):
 
 
 def db():
+    # Always read the real CRM database on Aliyun server
     return sqlite3.connect(DB)
 
 def init_db():
@@ -58,7 +59,10 @@ def stats():
     c = conn.cursor()
     data = {}
     for st in ["NEW","CONTACTED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]:
-        data[st] = c.execute("SELECT COUNT(*) FROM leads WHERE status=?", (st,)).fetchone()[0]
+        data[st] = c.execute(
+            "SELECT COUNT(*) FROM leads WHERE UPPER(COALESCE(status,''))=?",
+            (st,)
+        ).fetchone()[0]
     data["TOTAL"] = c.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
     conn.close()
     return data
@@ -212,99 +216,120 @@ def home(request: Request, q: str = ""):
         </tr>
         """
 
+    # V5.0 dynamic dashboard calculations
+    status_order = ["NEW","CONTACTED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]
+    max_stage = max([stats_data.get(x,0) for x in status_order] + [1])
+
+    funnel_html = ""
+    for st in status_order:
+        n = stats_data.get(st, 0)
+        pct = int(n * 100 / max_stage) if max_stage else 0
+        funnel_html += f"""
+        <div class="funnel-row">
+            <div class="funnel-name">{st}</div>
+            <div class="funnel-bar"><span style="width:{pct}%"></span></div>
+            <div class="funnel-num">{n}</div>
+        </div>
+        """
+
+    recent_rows = ""
+    for l in leads[:50]:
+        recent_rows += f"""
+        <tr>
+            <td><a href="/lead/{l[0]}">{l[1]}</a></td>
+            <td>{l[2] or ''}</td>
+            <td><a href="mailto:{l[3]}">{l[3] or ''}</a></td>
+            <td>{l[5] or ''}</td>
+            <td>{l[9] or ''}</td>
+            <td>{l[12] or ''}</td>
+            <td>${l[17] or '0'}</td>
+        </tr>
+        """
+
     return f"""
 <!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>SOGRACE CRM V5.0 Dashboard</title>
+<title>SOGRACE CRM V5.0 Professional Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root{{
-  --bg:#07111f;
-  --panel:#0f1d33;
-  --panel2:#132846;
-  --line:rgba(255,255,255,.08);
-  --text:#f8fafc;
-  --muted:#94a3b8;
-  --blue:#2f83ff;
-  --green:#0bbf7a;
-  --red:#ef4444;
-  --orange:#f59e0b;
+  --bg:#07111f;--side:#050b14;--panel:#0f1d33;--panel2:#132846;
+  --text:#f8fafc;--muted:#94a3b8;--line:rgba(255,255,255,.08);
+  --blue:#2563eb;--green:#0bbf7a;--orange:#f59e0b;--red:#ef4444;
 }}
 *{{box-sizing:border-box}}
 body{{font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);margin:0}}
 a{{color:inherit;text-decoration:none}}
 .layout{{display:grid;grid-template-columns:250px 1fr;min-height:100vh}}
-.sidebar{{background:#050b14;border-right:1px solid var(--line);padding:22px 18px;position:sticky;top:0;height:100vh}}
-.brand{{font-size:22px;font-weight:800;letter-spacing:.5px;margin-bottom:6px}}
-.version{{color:var(--muted);font-size:13px;margin-bottom:26px}}
+.sidebar{{background:var(--side);border-right:1px solid var(--line);padding:22px 18px;position:sticky;top:0;height:100vh}}
+.logo{{font-size:22px;font-weight:900;margin-bottom:6px}}
+.ver{{color:var(--muted);font-size:13px;margin-bottom:24px}}
 .nav a{{display:block;padding:12px 14px;margin:7px 0;border-radius:12px;color:#dbeafe}}
 .nav a:hover,.nav .active{{background:linear-gradient(135deg,#1d4ed8,#2563eb);color:white}}
 .main{{padding:24px}}
-.topbar{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}
-.title h1{{margin:0;font-size:30px}}
-.title p{{margin:6px 0 0;color:var(--muted)}}
-.logout{{background:#1e293b;padding:10px 14px;border-radius:10px}}
+.top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}
+.top h1{{margin:0;font-size:30px}}
+.top p{{margin:6px 0 0;color:var(--muted)}}
+.user{{background:#111d33;padding:10px 14px;border-radius:12px;color:#dbeafe}}
 .grid{{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:16px;margin-bottom:18px}}
-.card{{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:0 18px 40px rgba(0,0,0,.22)}}
-.card .label{{color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.7px}}
-.card .num{{font-size:30px;font-weight:800;margin-top:8px}}
-.card.blue{{background:linear-gradient(135deg,#1d4ed8,#0f1d33)}}
-.card.green{{background:linear-gradient(135deg,#047857,#0f1d33)}}
-.card.orange{{background:linear-gradient(135deg,#b45309,#0f1d33)}}
-.card.red{{background:linear-gradient(135deg,#991b1b,#0f1d33)}}
-.section{{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px;margin:18px 0;box-shadow:0 18px 40px rgba(0,0,0,.2)}}
+.card{{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:0 18px 40px rgba(0,0,0,.2)}}
+.label{{color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.7px}}
+.num{{font-size:31px;font-weight:900;margin-top:8px}}
+.blue{{background:linear-gradient(135deg,#1d4ed8,#0f1d33)}}
+.green{{background:linear-gradient(135deg,#047857,#0f1d33)}}
+.orange{{background:linear-gradient(135deg,#b45309,#0f1d33)}}
+.red{{background:linear-gradient(135deg,#991b1b,#0f1d33)}}
+.section{{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px;margin:18px 0;box-shadow:0 18px 40px rgba(0,0,0,.18)}}
 .section h2{{margin:0 0 14px;font-size:20px}}
 .actions{{display:flex;flex-wrap:wrap;gap:10px}}
-.btn,.export{{display:inline-block;background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;border:0}}
-.btn.green,.export.green{{background:var(--green)}}
-.btn.orange,.export.orange{{background:var(--orange)}}
-.btn.red{{background:var(--red)}}
-input,select,textarea{{padding:10px;margin:5px;border-radius:10px;border:1px solid var(--line);background:#0b1628;color:white}}
-input::placeholder,textarea::placeholder{{color:#94a3b8}}
-button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:10px;cursor:pointer}}
-.table-wrap{{overflow:auto;max-height:620px;border-radius:14px;border:1px solid var(--line)}}
-table{{width:100%;border-collapse:collapse;font-size:13px;background:#0b1628}}
-th{{position:sticky;top:0;background:#111d33;color:#cbd5e1;z-index:1}}
-th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}}
-tr:hover{{filter:brightness(1.12)}}
-.delete{{background:#dc2626;padding:8px 12px;border-radius:8px}}
+.btn{{display:inline-block;background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;border:0}}
+.btn.green{{background:var(--green)}}.btn.orange{{background:var(--orange)}}.btn.red{{background:var(--red)}}
 .two{{display:grid;grid-template-columns:1fr 1fr;gap:18px}}
+.three{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px}}
+.funnel-row{{display:grid;grid-template-columns:120px 1fr 60px;gap:10px;align-items:center;margin:12px 0}}
+.funnel-name{{color:#cbd5e1;font-size:13px}}
+.funnel-bar{{height:14px;background:#07111f;border-radius:99px;overflow:hidden;border:1px solid var(--line)}}
+.funnel-bar span{{display:block;height:100%;background:linear-gradient(90deg,#2563eb,#0bbf7a);border-radius:99px}}
+.funnel-num{{text-align:right;color:#e2e8f0}}
+table{{width:100%;border-collapse:collapse;font-size:13px;background:#0b1628;border-radius:14px;overflow:hidden}}
+th{{background:#111d33;color:#cbd5e1;position:sticky;top:0}}
+th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:left}}
+.table-wrap{{overflow:auto;max-height:560px;border-radius:14px;border:1px solid var(--line)}}
+input,select,textarea{{padding:10px;margin:5px;border-radius:10px;border:1px solid var(--line);background:#0b1628;color:white}}
+button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:10px;cursor:pointer}}
 .notice p{{margin:8px 0;color:#dbeafe}}
-.small{{font-size:13px;color:var(--muted)}}
-@media(max-width:1100px){{
-  .layout{{grid-template-columns:1fr}}
-  .sidebar{{position:relative;height:auto}}
-  .grid{{grid-template-columns:repeat(2,1fr)}}
-  .two{{grid-template-columns:1fr}}
-}}
+.small{{color:var(--muted);font-size:13px}}
+@media(max-width:1200px){{.grid{{grid-template-columns:repeat(2,1fr)}}.two,.three{{grid-template-columns:1fr}}}}
+@media(max-width:800px){{.layout{{grid-template-columns:1fr}}.sidebar{{position:relative;height:auto}}}}
 </style>
 </head>
 <body>
 <div class="layout">
   <aside class="sidebar">
-    <div class="brand">SOGRACE CRM</div>
-    <div class="version">V5.0 Dashboard Edition</div>
+    <div class="logo">SOGRACE CRM</div>
+    <div class="ver">V5.0 Professional</div>
     <div class="nav">
       <a class="active" href="/">📊 Dashboard</a>
-      <a href="#leads">👥 Lead List</a>
+      <a href="#leads">👥 Recent Leads</a>
       <a href="#add">➕ Add Lead</a>
       <a href="/email_center">📧 Email Center</a>
       <a href="/auto_collect">🤖 Auto Collect</a>
       <a href="/lead_collect_log">📄 Collector Log</a>
-      <a href="/user_management">⚙️ User Management</a>
-      <a href="/export">⬇ Export CSV</a>
+      <a href="/user_management">⚙️ Users</a>
+      <a href="/export">⬇ Export</a>
+      <a href="/logout">🚪 Logout</a>
     </div>
   </aside>
 
   <main class="main">
-    <div class="topbar">
-      <div class="title">
+    <div class="top">
+      <div>
         <h1>Business Control Dashboard</h1>
-        <p>Lead pipeline, follow-up reminders, auto collection and email sending status.</p>
+        <p>Dynamic data from crm.db · leads, pipeline, follow-up, automation and sales ranking.</p>
       </div>
-      <a class="logout" href="/logout">Logout</a>
+      <div class="user">User: {username} · Role: {role}</div>
     </div>
 
     <div class="grid">
@@ -313,7 +338,6 @@ tr:hover{{filter:brightness(1.12)}}
       <div class="card"><div class="label">Contacted</div><div class="num">{stats_data["CONTACTED"]}</div></div>
       <div class="card"><div class="label">Quoted</div><div class="num">{stats_data["QUOTED"]}</div></div>
       <div class="card green"><div class="label">Ordered</div><div class="num">{stats_data["ORDERED"]}</div></div>
-
       <div class="card"><div class="label">Sample</div><div class="num">{stats_data["SAMPLE"]}</div></div>
       <div class="card"><div class="label">Negotiation</div><div class="num">{stats_data["NEGOTIATION"]}</div></div>
       <div class="card red"><div class="label">Lost</div><div class="num">{stats_data["LOST"]}</div></div>
@@ -326,14 +350,14 @@ tr:hover{{filter:brightness(1.12)}}
       <div class="card red"><div class="label">Overdue Follow Up</div><div class="num">{len(overdue_items)}</div></div>
       <div class="card"><div class="label">Auto Collect</div><div class="num">Ready</div></div>
       <div class="card"><div class="label">Auto Email</div><div class="num">Ready</div></div>
-      <div class="card"><div class="label">Login User</div><div class="num" style="font-size:24px">{username}</div></div>
+      <div class="card"><div class="label">Visible Leads</div><div class="num">{len(leads)}</div></div>
     </div>
 
     <div class="section">
       <h2>Quick Actions</h2>
       <div class="actions">
         <a class="btn green" href="#add">Add Lead</a>
-        <a class="btn" href="#leads">Lead List</a>
+        <a class="btn" href="#leads">Recent Leads</a>
         <a class="btn" href="/email_center">Email Center</a>
         <a class="btn" href="/user_management">User Management</a>
         <a class="btn orange" href="/auto_collect">Auto Collect Leads</a>
@@ -345,6 +369,10 @@ tr:hover{{filter:brightness(1.12)}}
     </div>
 
     <div class="two">
+      <div class="section">
+        <h2>Lead Pipeline Funnel</h2>
+        {funnel_html}
+      </div>
       <div class="section notice">
         <h2>Follow Up Reminder</h2>
         <h3>Today</h3>
@@ -352,12 +380,15 @@ tr:hover{{filter:brightness(1.12)}}
         <h3 style="color:#ff9999">Overdue</h3>
         {''.join([f'<p style="color:#ffb4b4"><a href="/lead/{x[0]}">{x[1]}</a> | Owner: {x[2]} | Date: {x[3]}</p>' for x in overdue_items]) or '<p class="small">No overdue follow up.</p>'}
       </div>
+    </div>
 
+    <div class="two">
       <div class="section">
-        <h2>Sales Ranking</h2>
-        <h3>Lead Count</h3>
+        <h2>Lead Count Ranking</h2>
         {sales_ranking_html}
-        <h3>Pipeline Value</h3>
+      </div>
+      <div class="section">
+        <h2>Pipeline Value Ranking</h2>
         {money_ranking_html}
       </div>
     </div>
@@ -383,31 +414,34 @@ tr:hover{{filter:brightness(1.12)}}
         <input name="q" placeholder="Search company / email / country" value="{q}">
         <button>Search</button>
       </form>
-      <a class="export" href="/">Reset</a>
-      <a class="export green" href="/export">Export CSV</a>
+      <a class="btn" href="/">Reset</a>
+      <a class="btn green" href="/export">Export CSV</a>
       <form action="/import" method="post" enctype="multipart/form-data" style="margin-top:14px">
         <input type="file" name="file" accept=".csv"><button>Import CSV</button>
       </form>
     </div>
 
     <div id="leads" class="section">
-      <h2>Lead List</h2>
+      <h2>Recent 50 Leads</h2>
       <div class="table-wrap">
         <table>
-          <tr>
-            <th>Company</th><th>Contact</th><th>Email</th><th>Country</th><th>WhatsApp</th>
-            <th>Category</th><th>Source</th><th>Product</th><th>Value</th><th>Last Contact</th>
-            <th>Expected Amount</th><th>Quick Update</th><th>Action</th>
-          </tr>
-          {rows}
+          <tr><th>Company</th><th>Contact</th><th>Email</th><th>Country</th><th>Status</th><th>Owner</th><th>Expected</th></tr>
+          {recent_rows}
         </table>
       </div>
+      <p class="small">Need full edit? Open lead detail by clicking company name.</p>
     </div>
   </main>
 </div>
 </body>
 </html>
 """
+
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_alias(request: Request):
+    return home(request)
 
 
 
