@@ -79,10 +79,13 @@ def _v51_today_count_from_text(text):
 
 def _v51_log_count(pattern, path=None):
     """
-    Count real events from log file as fallback when JSON status saved/skipped is wrong.
+    Count real events from full log file as fallback when JSON status saved/skipped is wrong.
     """
     try:
-        text = _v51_safe_read(path or V13_COLLECT_LOG, 300000)
+        p = FilePath(path or V13_COLLECT_LOG)
+        if not p.exists():
+            return 0
+        text = p.read_text(encoding="utf-8", errors="ignore")
         return len(re.findall(pattern, text))
     except Exception:
         return 0
@@ -179,6 +182,71 @@ def _v51_write_status(kind, status, message=""):
             f.write(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {kind} | {status} | {message}\n")
     except Exception:
         pass
+
+# ===== CRM V5.2 P4 DASHBOARD HELPERS START =====
+def _clean_email_for_metric(raw):
+    raw = raw or ""
+    m = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", raw)
+    if not m:
+        return ""
+    e = m[0].strip().lower()
+    bad = ["example.com","domain.com","test.com","yourdomain","noreply","no-reply","donotreply",".png",".jpg",".jpeg",".webp",".gif"]
+    if any(x in e for x in bad):
+        return ""
+    return e
+
+def _p4_dashboard_metrics():
+    conn = db()
+    c = conn.cursor()
+    total = c.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+    rows = c.execute("SELECT email,status,country,history,last_contact FROM leads").fetchall()
+    conn.close()
+
+    emails = []
+    contacted = 0
+    today_sent = 0
+    failed = 0
+    today = datetime.date.today().isoformat()
+
+    country_count = {}
+    for email_raw, status, country, history, last_contact in rows:
+        e = _clean_email_for_metric(email_raw)
+        if e:
+            emails.append(e)
+
+        if (status or "").upper() == "CONTACTED":
+            contacted += 1
+
+        h = history or ""
+        if today in h and ("Auto Email Sent" in h or "Bulk Email Sent" in h or "Email Sent" in h):
+            today_sent += 1
+        if "Auto Email Failed" in h or "Bulk Email Failed" in h or "Email Failed" in h:
+            failed += 1
+
+        co = (country or "").strip() or "Unknown"
+        country_count[co] = country_count.get(co, 0) + 1
+
+    unique_emails = len(set(emails))
+    valid_emails = len(emails)
+    duplicates = max(valid_emails - unique_emails, 0)
+    remaining = max(unique_emails - contacted, 0)
+
+    top_countries = sorted(country_count.items(), key=lambda x: x[1], reverse=True)[:10]
+    top_country_html = "".join([f"<p>{html.escape(str(k))}: {v}</p>" for k,v in top_countries]) or "<p>No data</p>"
+
+    return {
+        "total_leads": total,
+        "valid_emails": valid_emails,
+        "unique_emails": unique_emails,
+        "duplicates": duplicates,
+        "contacted": contacted,
+        "remaining": remaining,
+        "today_sent": today_sent,
+        "failed": failed,
+        "top_country_html": top_country_html
+    }
+# ===== CRM V5.2 P4 DASHBOARD HELPERS END =====
+
 # ===== CRM V5.1 LIVE STATUS HELPERS END =====
 
 def stats():
@@ -308,6 +376,8 @@ def home(request: Request, q: str = ""):
     v51_email_sent = v51_status["email"]["sent"]
     v51_email_failed = v51_status["email"]["failed"]
 
+    p4 = _p4_dashboard_metrics()
+
 
     rows = ""
     today = datetime.date.today().isoformat()
@@ -386,7 +456,7 @@ def home(request: Request, q: str = ""):
 <html>
 <head>
 <meta charset="utf-8">
-<title>SOGRACE CRM V5.1 Professional Dashboard</title>
+<title>SOGRACE CRM V5.2 P4 Professional Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root{{
@@ -444,7 +514,7 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
 <div class="layout">
   <aside class="sidebar">
     <div class="logo">SOGRACE CRM</div>
-    <div class="ver">V5.1 Professional</div>
+    <div class="ver">V5.2 P4 Professional</div>
     <div class="nav">
       <a class="active" href="/">📊 Dashboard</a>
       <a href="#leads">👥 Recent Leads</a>
@@ -483,11 +553,11 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
     </div>
 
     <div class="grid">
-      <div class="card"><div class="label">Today Follow Up</div><div class="num">{len(today_items)}</div></div>
-      <div class="card red"><div class="label">Overdue Follow Up</div><div class="num">{len(overdue_items)}</div></div>
-      <div class="card"><div class="label">Auto Collect</div><div class="num">{v51_collect_status}</div><div class="small">Found: {v51_collect_found} · Saved: {v51_status["collect"].get("saved",0)} · Skipped: {v51_status["collect"].get("skipped",0)} · Email: {v51_status["collect"].get("email_found",0)}</div></div>
-      <div class="card"><div class="label">Auto Email</div><div class="num">{v51_email_status}</div><div class="small">Sent: {v51_email_sent} · Failed: {v51_email_failed}</div></div>
-      <div class="card"><div class="label">Visible Leads</div><div class="num">{len(leads)}</div></div>
+      <div class="card green"><div class="label">Valid Emails</div><div class="num">{p4["valid_emails"]}</div><div class="small">Unique: {p4["unique_emails"]} · Dup: {p4["duplicates"]}</div></div>
+      <div class="card orange"><div class="label">Remaining Emails</div><div class="num">{p4["remaining"]}</div><div class="small">Contacted: {p4["contacted"]}</div></div>
+      <div class="card"><div class="label">Auto Collect</div><div class="num">{v51_collect_status}</div><div class="small">Found: {v51_collect_found} · Saved: {p4["total_leads"]} · Email: {p4["valid_emails"]}</div></div>
+      <div class="card"><div class="label">Auto Email</div><div class="num">{v51_email_status}</div><div class="small">Sent: {v51_email_sent} · Today: {p4["today_sent"]} · Failed: {v51_email_failed}</div></div>
+      <div class="card"><div class="label">Visible Leads</div><div class="num">{len(leads)}</div><div class="small">Follow Up: {len(today_items)} · Overdue: {len(overdue_items)}</div></div>
     </div>
 
     <div class="section">
@@ -505,6 +575,26 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
         <a class="btn orange" href="/auto_send_v52/200">Auto Send V5.2 200</a>
         <a class="btn" href="/bulk_send/50">Send 50</a>
         <a class="btn" href="/bulk_send/100">Send 100</a>
+      </div>
+    </div>
+
+    <div class="three">
+      <div class="section">
+        <h2>Email Queue V5.2</h2>
+        <p>Valid Emails: {p4["valid_emails"]}</p>
+        <p>Unique Emails: {p4["unique_emails"]}</p>
+        <p>Duplicates: {p4["duplicates"]}</p>
+        <p>Remaining: {p4["remaining"]}</p>
+      </div>
+      <div class="section">
+        <h2>Top Countries</h2>
+        {p4["top_country_html"]}
+      </div>
+      <div class="section">
+        <h2>Reply Center</h2>
+        <p>Unread Replies: 0</p>
+        <p>Today Replies: 0</p>
+        <p>Need Follow Up: {len(today_items) + len(overdue_items)}</p>
       </div>
     </div>
 
@@ -578,6 +668,13 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
 """
 
 
+
+
+@app.get("/api/v52/p4/dashboard")
+def api_v52_p4_dashboard(request: Request):
+    if not is_login(request):
+        return {"error": "login required"}
+    return _p4_dashboard_metrics()
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_alias(request: Request):

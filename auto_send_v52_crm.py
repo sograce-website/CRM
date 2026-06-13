@@ -1,11 +1,7 @@
 # auto_send_v52_crm.py
-# SOGRACE CRM AUTO EMAIL V5.2
+# SOGRACE CRM AUTO EMAIL V5.2 P4
 # Directly reads crm.db leads table.
-# Sends to leads.email, skips already sent, invalid and duplicates.
-# Writes result into leads.history and crm_bulk_send.log.
-# Usage:
-#   python auto_send_v52_crm.py preview 20
-#   python auto_send_v52_crm.py send 50
+# Sends distinct emails only, skips already-sent emails globally.
 
 import sys
 import re
@@ -25,12 +21,7 @@ SMTP_PASSWORD = "mtpfRVuYzZrz8Vnr"
 SMTP_FROM = "info@sograce.cn"
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-
-BAD_EMAIL_WORDS = [
-    "example.com", "domain.com", "test.com", "yourdomain",
-    "noreply", "no-reply", "donotreply", "privacy@", "abuse@",
-    ".png", ".jpg", ".jpeg", ".webp", ".gif"
-]
+BAD_EMAIL_WORDS = ["example.com","domain.com","test.com","yourdomain","noreply","no-reply","donotreply","privacy@","abuse@",".png",".jpg",".jpeg",".webp",".gif"]
 
 SUBJECT = "GPS SOS Watch and Medical Alert Device Supplier"
 
@@ -75,17 +66,17 @@ def clean_email(raw):
         return e
     return ""
 
-def already_sent(history, email):
-    h = (history or "").lower()
-    e = (email or "").lower()
-    return (
-        "bulk email sent" in h
-        or "auto email sent" in h
-        or f"to: {e}" in h
-    )
+def get_sent_email_set(conn):
+    rows = conn.execute("SELECT history FROM leads WHERE history LIKE '%To:%'").fetchall()
+    sent = set()
+    for (h,) in rows:
+        for e in EMAIL_RE.findall(h or ""):
+            sent.add(e.lower())
+    return sent
 
 def get_candidates(limit):
     conn = sqlite3.connect(DB)
+    sent_global = get_sent_email_set(conn)
     rows = conn.execute("""
         SELECT id, company, email, website, country, source, history
         FROM leads
@@ -93,8 +84,7 @@ def get_candidates(limit):
           AND email <> ''
           AND email LIKE '%@%'
         ORDER BY id DESC
-        LIMIT ?
-    """, (limit * 5,)).fetchall()
+    """).fetchall()
     conn.close()
 
     result = []
@@ -106,7 +96,7 @@ def get_candidates(limit):
             continue
         if email in seen:
             continue
-        if already_sent(history, email):
+        if email in sent_global:
             continue
         seen.add(email)
         result.append((lead_id, company or "", email, website or "", country or "", source or "", history or ""))
@@ -120,7 +110,6 @@ def send_one(to_email):
     msg["Subject"] = Header(SUBJECT, "utf-8")
     msg["From"] = SMTP_FROM
     msg["To"] = to_email
-
     server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30)
     server.login(SMTP_USER, SMTP_PASSWORD)
     server.sendmail(SMTP_FROM, [to_email], msg.as_string())
@@ -130,21 +119,15 @@ def update_history(lead_id, old_history, line, status=None):
     conn = sqlite3.connect(DB)
     history = (old_history or "") + "\n" + line
     if status:
-        conn.execute(
-            "UPDATE leads SET history=?, status=?, last_contact=? WHERE id=?",
-            (history, status, now(), lead_id)
-        )
+        conn.execute("UPDATE leads SET history=?, status=?, last_contact=? WHERE id=?", (history, status, now(), lead_id))
     else:
-        conn.execute(
-            "UPDATE leads SET history=?, last_contact=? WHERE id=?",
-            (history, now(), lead_id)
-        )
+        conn.execute("UPDATE leads SET history=?, last_contact=? WHERE id=?", (history, now(), lead_id))
     conn.commit()
     conn.close()
 
 def preview(limit):
     rows = get_candidates(limit)
-    print(f"PREVIEW {len(rows)} candidates")
+    print(f"PREVIEW {len(rows)} unique candidates")
     for r in rows:
         lead_id, company, email, website, country, source, history = r
         print(f"{lead_id} | {company} | {email} | {country} | {website}")
@@ -152,8 +135,7 @@ def preview(limit):
 def send(limit):
     rows = get_candidates(limit)
     sent = failed = skipped = 0
-
-    log(f"V5.2 SEND START target={limit} candidates={len(rows)}")
+    log(f"V5.2 P4 SEND START target={limit} candidates={len(rows)}")
 
     for lead_id, company, email, website, country, source, history in rows:
         try:
@@ -168,7 +150,7 @@ def send(limit):
             failed += 1
             log(f"FAILED: {email} | {company} | {str(e)}")
 
-    log(f"V5.2 SEND FINISHED: sent={sent} failed={failed} skipped={skipped}")
+    log(f"V5.2 P4 SEND FINISHED: sent={sent} failed={failed} skipped={skipped}")
 
 def main():
     if len(sys.argv) < 3:
@@ -176,15 +158,12 @@ def main():
         print("  python auto_send_v52_crm.py preview 20")
         print("  python auto_send_v52_crm.py send 50")
         return
-
     mode = sys.argv[1].lower()
     try:
         limit = int(sys.argv[2])
     except Exception:
         limit = 20
-
     limit = max(1, min(limit, 500))
-
     if mode == "preview":
         preview(limit)
     elif mode == "send":
