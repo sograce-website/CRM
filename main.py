@@ -249,11 +249,21 @@ def _p4_dashboard_metrics():
     }
 # ===== CRM V5.2 P4 DASHBOARD HELPERS END =====
 
-# ===== CRM V5.2 P5.1 REPLY CENTER HELPERS START =====
+# ===== CRM V5.2 P5.2 REPLY CLASSIFICATION HELPERS START =====
 IMAP_HOST = "imap.qiye.aliyun.com"
 IMAP_PORT = 993
 IMAP_USER = "info@sograce.cn"
 IMAP_PASSWORD = SMTP_PASSWORD
+
+SYSTEM_SENDERS = [
+    "no-reply", "noreply", "postmaster", "mailer-daemon", "mailsupport",
+    "mail delivery", "delivery", "bounce", "notification"
+]
+SYSTEM_SUBJECTS = [
+    "undeliverable", "delivery status", "delivery failed", "mail delivery",
+    "returned mail", "failure notice", "退信", "验证", "verification",
+    "requires verification", "自动回复", "auto reply", "out of office"
+]
 
 def _p5_init_reply_db():
     conn = db()
@@ -270,11 +280,50 @@ def _p5_init_reply_db():
         status TEXT DEFAULT 'UNREAD',
         owner TEXT DEFAULT '',
         lead_id INTEGER DEFAULT 0,
+        category TEXT DEFAULT 'CUSTOMER',
         created_at TEXT
     )
     """)
+    cols = [x[1] for x in c.execute("PRAGMA table_info(email_replies)").fetchall()]
+    if "category" not in cols:
+        c.execute("ALTER TABLE email_replies ADD COLUMN category TEXT DEFAULT 'CUSTOMER'")
     conn.commit()
     conn.close()
+
+def _p5_classify_reply(sender_email, subject, body=""):
+    s = (sender_email or "").lower()
+    sub = (subject or "").lower()
+    b = (body or "").lower()[:2000]
+
+    if any(x in s for x in SYSTEM_SENDERS):
+        if "postmaster" in s or "mailer-daemon" in s:
+            return "BOUNCE"
+        return "SYSTEM"
+
+    if any(x in sub for x in SYSTEM_SUBJECTS) or any(x in b for x in ["undeliverable", "delivery status notification", "mail delivery failed"]):
+        if any(x in sub for x in ["undeliverable", "delivery failed", "delivery status", "returned mail", "failure notice"]) or "delivery status notification" in b:
+            return "BOUNCE"
+        return "SYSTEM"
+
+    return "CUSTOMER"
+
+def _p5_reclassify_all_replies():
+    _p5_init_reply_db()
+    conn = db()
+    rows = conn.execute("SELECT id,sender_email,subject,body FROM email_replies").fetchall()
+    customer = system = bounce = 0
+    for rid, sender_email, subject, body in rows:
+        cat = _p5_classify_reply(sender_email, subject, body)
+        if cat == "CUSTOMER":
+            customer += 1
+        elif cat == "BOUNCE":
+            bounce += 1
+        else:
+            system += 1
+        conn.execute("UPDATE email_replies SET category=? WHERE id=?", (cat, rid))
+    conn.commit()
+    conn.close()
+    return {"customer": customer, "system": system, "bounce": bounce}
 
 def _p5_decode_mime(value):
     if not value:
@@ -338,7 +387,7 @@ def _p5_extract_body(msg):
         return ""
     return ""
 
-def _p5_sync_imap(limit=50):
+def _p5_sync_imap(limit=80):
     _p5_init_reply_db()
     synced = 0
     failed = 0
@@ -365,18 +414,19 @@ def _p5_sync_imap(limit=50):
                 sender, sender_email = _p5_clean_sender(msg.get("From", ""))
                 received_time = msg.get("Date", "") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 body = _p5_extract_body(msg)
+                category = _p5_classify_reply(sender_email, subject, body)
                 lead_id, owner = _p5_match_lead(sender_email)
 
                 conn.execute("""
                     INSERT OR IGNORE INTO email_replies
-                    (message_uid,sender,sender_email,subject,received_time,body,status,owner,lead_id,created_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                    (message_uid,sender,sender_email,subject,received_time,body,status,owner,lead_id,category,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     uid, sender, sender_email, subject, received_time, body,
-                    "UNREAD", owner, lead_id, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    "UNREAD", owner, lead_id, category, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ))
 
-                if lead_id:
+                if lead_id and category == "CUSTOMER":
                     old = conn.execute("SELECT history FROM leads WHERE id=?", (lead_id,)).fetchone()
                     old_history = old[0] if old and old[0] else ""
                     line = f"\n{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} Customer Reply | From: {sender_email} | Subject: {subject}"
@@ -388,6 +438,7 @@ def _p5_sync_imap(limit=50):
         conn.commit()
         conn.close()
         mail.logout()
+        _p5_reclassify_all_replies()
         return {"synced": synced, "failed": failed, "message": "IMAP sync finished"}
     except Exception as e:
         return {"synced": synced, "failed": failed + 1, "message": str(e)}
@@ -396,13 +447,16 @@ def _p5_reply_metrics():
     _p5_init_reply_db()
     conn = db()
     today = datetime.date.today().isoformat()
-    unread = conn.execute("SELECT COUNT(*) FROM email_replies WHERE status='UNREAD'").fetchone()[0]
-    today_replies = conn.execute("SELECT COUNT(*) FROM email_replies WHERE created_at LIKE ?", (today+"%",)).fetchone()[0]
-    need_follow = conn.execute("SELECT COUNT(*) FROM email_replies WHERE status IN ('UNREAD','FOLLOW_UP')").fetchone()[0]
+    customer = conn.execute("SELECT COUNT(*) FROM email_replies WHERE category='CUSTOMER'").fetchone()[0]
+    system = conn.execute("SELECT COUNT(*) FROM email_replies WHERE category='SYSTEM'").fetchone()[0]
+    bounce = conn.execute("SELECT COUNT(*) FROM email_replies WHERE category='BOUNCE'").fetchone()[0]
+    unread = conn.execute("SELECT COUNT(*) FROM email_replies WHERE status='UNREAD' AND category='CUSTOMER'").fetchone()[0]
+    today_replies = conn.execute("SELECT COUNT(*) FROM email_replies WHERE created_at LIKE ? AND category='CUSTOMER'", (today+"%",)).fetchone()[0]
+    need_follow = conn.execute("SELECT COUNT(*) FROM email_replies WHERE status IN ('UNREAD','FOLLOW_UP') AND category='CUSTOMER'").fetchone()[0]
     total = conn.execute("SELECT COUNT(*) FROM email_replies").fetchone()[0]
     conn.close()
-    return {"unread": unread, "today": today_replies, "need_follow": need_follow, "total": total}
-# ===== CRM V5.2 P5.1 REPLY CENTER HELPERS END =====
+    return {"unread": unread, "today": today_replies, "need_follow": need_follow, "total": total, "customer": customer, "system": system, "bounce": bounce}
+# ===== CRM V5.2 P5.2 REPLY CLASSIFICATION HELPERS END =====
 
 
 # ===== CRM V5.1 LIVE STATUS HELPERS END =====
@@ -615,7 +669,7 @@ def home(request: Request, q: str = ""):
 <html>
 <head>
 <meta charset="utf-8">
-<title>SOGRACE CRM V5.2 P5 Reply Center Professional</title>
+<title>SOGRACE CRM V5.2 P5.2 Reply Filter Professional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root{{
@@ -673,7 +727,7 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
 <div class="layout">
   <aside class="sidebar">
     <div class="logo">SOGRACE CRM</div>
-    <div class="ver">V5.2 P5 Reply Center</div>
+    <div class="ver">V5.2 P5.2 Reply Filter</div>
     <div class="nav">
       <a class="active" href="/">📊 Dashboard</a>
       <a href="#leads">👥 Recent Leads</a>
@@ -750,9 +804,10 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
         {p4["top_country_html"]}
       </div>
       <div class="section">
-        <h2>Reply Center P5.1</h2>
-        <p>Unread Replies: {p5_reply["unread"]}</p>
-        <p>Today Replies: {p5_reply["today"]}</p>
+        <h2>Reply Center P5.2</h2>
+        <p>Customer Replies: {p5_reply["customer"]}</p>
+        <p>Bounce Emails: {p5_reply["bounce"]}</p>
+        <p>System Emails: {p5_reply["system"]}</p>
         <p>Need Follow Up: {p5_reply["need_follow"]}</p>
         <p><a class="btn" href="/reply_center">Open Reply Center</a> <a class="btn orange" href="/sync_replies">Sync Now</a></p>
       </div>
@@ -1871,12 +1926,12 @@ def v51_status_page(request: Request):
     """)
 
 
-# ===== CRM V5.2 P5.1 REPLY CENTER ROUTES START =====
+# ===== CRM V5.2 P5.2 REPLY CENTER ROUTES START =====
 @app.get("/sync_replies", response_class=HTMLResponse)
 def sync_replies(request: Request):
     if not is_login(request):
         return RedirectResponse("/login", 303)
-    res = _p5_sync_imap(80)
+    res = _p5_sync_imap(120)
     return HTMLResponse(f"""
     <html><body style="font-family:Arial;background:#07111f;color:white;padding:30px">
     <h2>Reply Sync Finished</h2>
@@ -1887,46 +1942,65 @@ def sync_replies(request: Request):
     </body></html>
     """)
 
+@app.get("/reclassify_replies", response_class=HTMLResponse)
+def reclassify_replies(request: Request):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+    res = _p5_reclassify_all_replies()
+    return HTMLResponse(f"<h2>Reclassified</h2><p>Customer: {res['customer']}</p><p>System: {res['system']}</p><p>Bounce: {res['bounce']}</p><p><a href='/reply_center'>Back</a></p>")
+
 @app.get("/reply_center", response_class=HTMLResponse)
-def reply_center_v52_p5(request: Request):
+def reply_center_v52_p52(request: Request, category: str = "CUSTOMER"):
     if not is_login(request):
         return RedirectResponse("/login", 303)
     _p5_init_reply_db()
+    _p5_reclassify_all_replies()
+
+    category = (category or "CUSTOMER").upper()
+    if category not in ["CUSTOMER","BOUNCE","SYSTEM","ALL"]:
+        category = "CUSTOMER"
+
     username = request.cookies.get("crm_user")
     role = get_user_role(username) or "sales"
     conn = db()
-    if role == "admin":
-        rows = conn.execute("""
-            SELECT r.id,r.sender,r.sender_email,r.subject,r.received_time,r.status,r.owner,r.lead_id,
-                   COALESCE(l.company,'') AS company
-            FROM email_replies r
-            LEFT JOIN leads l ON r.lead_id=l.id
-            ORDER BY r.id DESC
-            LIMIT 200
-        """).fetchall()
-    else:
-        rows = conn.execute("""
-            SELECT r.id,r.sender,r.sender_email,r.subject,r.received_time,r.status,r.owner,r.lead_id,
-                   COALESCE(l.company,'') AS company
-            FROM email_replies r
-            LEFT JOIN leads l ON r.lead_id=l.id
-            WHERE r.owner=? OR r.owner=''
-            ORDER BY r.id DESC
-            LIMIT 200
-        """, (username,)).fetchall()
+
+    where = ""
+    params = []
+    if category != "ALL":
+        where = "WHERE r.category=?"
+        params.append(category)
+
+    if role != "admin":
+        if where:
+            where += " AND (r.owner=? OR r.owner='')"
+        else:
+            where = "WHERE (r.owner=? OR r.owner='')"
+        params.append(username)
+
+    rows = conn.execute(f"""
+        SELECT r.id,r.sender,r.sender_email,r.subject,r.received_time,r.status,r.owner,r.lead_id,
+               COALESCE(l.company,'') AS company,r.category
+        FROM email_replies r
+        LEFT JOIN leads l ON r.lead_id=l.id
+        {where}
+        ORDER BY r.id DESC
+        LIMIT 300
+    """, params).fetchall()
     m = _p5_reply_metrics()
     conn.close()
 
     trs = ""
     for r in rows:
-        rid,sender,sender_email,subject,received_time,status,owner,lead_id,company = r
+        rid,sender,sender_email,subject,received_time,status,owner,lead_id,company,cat = r
         lead_link = f"<a href='/lead/{lead_id}'>{html.escape(company or 'Open Lead')}</a>" if lead_id else "Not matched"
+        badge = {"CUSTOMER":"#0bbf7a","BOUNCE":"#ef4444","SYSTEM":"#f59e0b"}.get(cat, "#2563eb")
         trs += f"""
         <tr>
           <td>{rid}</td>
           <td>{html.escape(received_time or '')}</td>
           <td>{html.escape(sender_email or sender or '')}</td>
           <td>{html.escape(subject or '')}</td>
+          <td><span style="background:{badge};padding:4px 8px;border-radius:8px">{html.escape(cat or '')}</span></td>
           <td>{lead_link}</td>
           <td>{html.escape(owner or '')}</td>
           <td>{html.escape(status or '')}</td>
@@ -1937,7 +2011,7 @@ def reply_center_v52_p5(request: Request):
         </tr>
         """
     return HTMLResponse(f"""
-    <html><head><title>SOGRACE CRM Reply Center P5.1</title>
+    <html><head><title>SOGRACE CRM Reply Center P5.2</title>
     <style>
     body{{font-family:Arial;background:#07111f;color:white;margin:0;padding:24px}}
     .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}}
@@ -1949,18 +2023,28 @@ def reply_center_v52_p5(request: Request):
     a{{color:white}}
     .btn{{background:#2563eb;color:white;padding:7px 10px;border-radius:8px;text-decoration:none;margin:2px;display:inline-block}}
     .orange{{background:#f59e0b}}
+    .red{{background:#ef4444}}
+    .green{{background:#0bbf7a}}
     </style></head><body>
-    <h1>📨 Reply Center P5.1</h1>
-    <p><a class="btn" href="/">Dashboard</a> <a class="btn orange" href="/sync_replies">Sync Now</a></p>
+    <h1>📨 Reply Center P5.2</h1>
+    <p>
+      <a class="btn" href="/">Dashboard</a>
+      <a class="btn orange" href="/sync_replies">Sync Now</a>
+      <a class="btn" href="/reclassify_replies">Reclassify</a>
+      <a class="btn green" href="/reply_center?category=CUSTOMER">Customer</a>
+      <a class="btn red" href="/reply_center?category=BOUNCE">Bounce</a>
+      <a class="btn orange" href="/reply_center?category=SYSTEM">System</a>
+      <a class="btn" href="/reply_center?category=ALL">All</a>
+    </p>
     <div class="grid">
-      <div class="card">Total Replies<div class="num">{m["total"]}</div></div>
-      <div class="card">Unread<div class="num">{m["unread"]}</div></div>
-      <div class="card">Today<div class="num">{m["today"]}</div></div>
+      <div class="card">Customer Replies<div class="num">{m["customer"]}</div></div>
+      <div class="card">Bounce<div class="num">{m["bounce"]}</div></div>
+      <div class="card">System<div class="num">{m["system"]}</div></div>
       <div class="card">Need Follow Up<div class="num">{m["need_follow"]}</div></div>
     </div>
     <table>
-      <tr><th>ID</th><th>Date</th><th>From</th><th>Subject</th><th>Lead</th><th>Owner</th><th>Status</th><th>Action</th></tr>
-      {trs or '<tr><td colspan="8">No replies yet. Click Sync Now.</td></tr>'}
+      <tr><th>ID</th><th>Date</th><th>From</th><th>Subject</th><th>Type</th><th>Lead</th><th>Owner</th><th>Status</th><th>Action</th></tr>
+      {trs or '<tr><td colspan="9">No replies in this category.</td></tr>'}
     </table>
     </body></html>
     """)
@@ -1984,7 +2068,7 @@ def reply_followup(rid:int):
     conn.commit()
     conn.close()
     return RedirectResponse("/reply_center", 303)
-# ===== CRM V5.2 P5.1 REPLY CENTER ROUTES END =====
+# ===== CRM V5.2 P5.2 REPLY CENTER ROUTES END =====
 
 
 # ===== CRM V5.1 LIVE STATUS ROUTES END =====
