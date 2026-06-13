@@ -458,6 +458,95 @@ def _p5_reply_metrics():
     return {"unread": unread, "today": today_replies, "need_follow": need_follow, "total": total, "customer": customer, "system": system, "bounce": bounce}
 # ===== CRM V5.2 P5.2 REPLY CLASSIFICATION HELPERS END =====
 
+# ===== SOGRACE CRM V6.0 SALES PIPELINE HELPERS START =====
+def _v6_init_sales_tables():
+    conn = db()
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS quotes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lead_id INTEGER DEFAULT 0,
+        company TEXT DEFAULT '',
+        product TEXT DEFAULT '',
+        qty INTEGER DEFAULT 0,
+        price REAL DEFAULT 0,
+        amount REAL DEFAULT 0,
+        status TEXT DEFAULT 'Draft',
+        quote_date TEXT,
+        owner TEXT DEFAULT '',
+        note TEXT DEFAULT '',
+        created_at TEXT
+    )
+    """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lead_id INTEGER DEFAULT 0,
+        company TEXT DEFAULT '',
+        product TEXT DEFAULT '',
+        qty INTEGER DEFAULT 0,
+        value REAL DEFAULT 0,
+        po_date TEXT,
+        status TEXT DEFAULT 'Pending',
+        owner TEXT DEFAULT '',
+        note TEXT DEFAULT '',
+        created_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+def _v6_sales_metrics():
+    _v6_init_sales_tables()
+    conn = db()
+    c = conn.cursor()
+    hot = c.execute("SELECT COUNT(*) FROM leads WHERE UPPER(COALESCE(status,''))='HOT'").fetchone()[0]
+    replied = c.execute("SELECT COUNT(*) FROM leads WHERE UPPER(COALESCE(status,''))='REPLIED'").fetchone()[0]
+    quoted = c.execute("SELECT COUNT(*) FROM leads WHERE UPPER(COALESCE(status,''))='QUOTED'").fetchone()[0]
+    negotiation = c.execute("SELECT COUNT(*) FROM leads WHERE UPPER(COALESCE(status,''))='NEGOTIATION'").fetchone()[0]
+    ordered = c.execute("SELECT COUNT(*) FROM leads WHERE UPPER(COALESCE(status,''))='ORDERED'").fetchone()[0]
+    quote_count = c.execute("SELECT COUNT(*) FROM quotes").fetchone()[0]
+    order_count = c.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    pipeline = c.execute("SELECT COALESCE(SUM(amount),0) FROM quotes WHERE status NOT IN ('Lost','Won')").fetchone()[0] or 0
+    order_value = c.execute("SELECT COALESCE(SUM(value),0) FROM orders").fetchone()[0] or 0
+    conn.close()
+    return {
+        "hot": hot, "replied": replied, "quoted": quoted, "negotiation": negotiation, "ordered": ordered,
+        "quote_count": quote_count, "order_count": order_count,
+        "pipeline": float(pipeline), "order_value": float(order_value)
+    }
+
+def _v6_auto_hot_from_replies():
+    """
+    Upgrade replied leads to HOT if customer reply includes quotation/sample/catalog/MOQ keywords.
+    """
+    try:
+        _p5_init_reply_db()
+        conn = db()
+        rows = conn.execute("""
+            SELECT r.lead_id, r.subject, r.body
+            FROM email_replies r
+            WHERE r.category='CUSTOMER' AND r.lead_id>0
+        """).fetchall()
+        hot_words = ["price","pricing","quote","quotation","offer","catalog","brochure","sample","moq","minimum order","distributor","dealer","wholesale"]
+        changed = 0
+        for lead_id, subject, body in rows:
+            text = ((subject or "") + " " + (body or "")).lower()
+            if any(w in text for w in hot_words):
+                conn.execute("UPDATE leads SET status='HOT', next_followup=? WHERE id=? AND UPPER(COALESCE(status,'')) IN ('NEW','CONTACTED','REPLIED')",
+                             ((datetime.date.today()+datetime.timedelta(days=1)).isoformat(), lead_id))
+                changed += conn.total_changes
+            else:
+                conn.execute("UPDATE leads SET status='REPLIED', next_followup=? WHERE id=? AND UPPER(COALESCE(status,'')) IN ('NEW','CONTACTED')",
+                             ((datetime.date.today()+datetime.timedelta(days=3)).isoformat(), lead_id))
+        conn.commit()
+        conn.close()
+        return changed
+    except Exception:
+        return 0
+# ===== SOGRACE CRM V6.0 SALES PIPELINE HELPERS END =====
+
+
 
 # ===== CRM V5.1 LIVE STATUS HELPERS END =====
 
@@ -465,7 +554,7 @@ def stats():
     conn = db()
     c = conn.cursor()
     data = {}
-    for st in ["NEW","CONTACTED","REPLIED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]:
+    for st in ["NEW","CONTACTED","REPLIED","HOT","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]:
         data[st] = c.execute(
             "SELECT COUNT(*) FROM leads WHERE UPPER(COALESCE(status,''))=?",
             (st,)
@@ -590,6 +679,7 @@ def home(request: Request, q: str = ""):
 
     p4 = _p4_dashboard_metrics()
     p5_reply = _p5_reply_metrics()
+    v6 = _v6_sales_metrics()
 
 
     rows = ""
@@ -617,7 +707,7 @@ def home(request: Request, q: str = ""):
                     <input name="owner" value="{l[12] or ''}" placeholder="Owner">
                     <input name="next_followup" value="{l[13] or ''}" placeholder="Next Follow Up">
                     <select name="status">
-                        <option>{l[9]}</option><option>NEW</option><option>CONTACTED</option><option>REPLIED</option><option>QUOTED</option><option>SAMPLE</option><option>NEGOTIATION</option><option>ORDERED</option><option>LOST</option>
+                        <option>{l[9]}</option><option>NEW</option><option>CONTACTED</option><option>REPLIED</option><option>HOT</option><option>QUOTED</option><option>SAMPLE</option><option>NEGOTIATION</option><option>ORDERED</option><option>LOST</option>
                     </select>
                     <select name="product_interest">
                         <option>{l[14] or ''}</option><option>GPS Watch</option><option>GPS SOS Watch</option><option>GPS Tracker</option><option>Vehicle Tracker</option><option>Pet Tracker</option><option>OEM Project</option>
@@ -635,7 +725,7 @@ def home(request: Request, q: str = ""):
         """
 
     # V5.1 dynamic dashboard calculations
-    status_order = ["NEW","CONTACTED","REPLIED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]
+    status_order = ["NEW","CONTACTED","REPLIED","HOT","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]
     max_stage = max([stats_data.get(x,0) for x in status_order] + [1])
 
     funnel_html = ""
@@ -669,7 +759,7 @@ def home(request: Request, q: str = ""):
 <html>
 <head>
 <meta charset="utf-8">
-<title>SOGRACE CRM V5.2 P5.2 Reply Filter Professional</title>
+<title>SOGRACE CRM V6.0 Sales Pipeline Edition</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root{{
@@ -727,7 +817,7 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
 <div class="layout">
   <aside class="sidebar">
     <div class="logo">SOGRACE CRM</div>
-    <div class="ver">V5.2 P5.2 Reply Filter</div>
+    <div class="ver">V6.0 Sales Pipeline</div>
     <div class="nav">
       <a class="active" href="/">📊 Dashboard</a>
       <a href="#leads">👥 Recent Leads</a>
@@ -737,6 +827,9 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
       <a href="/lead_collect_log">📄 Collector Log</a>
       <a href="/v51_status">📡 V5.1 Status</a>
       <a href="/reply_center">💬 Reply Center</a>
+      <a href="/followup_center">⏰ Follow Up Center</a>
+      <a href="/quotes">💰 Quote Center</a>
+      <a href="/orders">📦 Order Center</a>
       <a href="/user_management">⚙️ Users</a>
       <a href="/export">⬇ Export</a>
       <a href="/logout">🚪 Logout</a>
@@ -810,6 +903,29 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
         <p>System Emails: {p5_reply["system"]}</p>
         <p>Need Follow Up: {p5_reply["need_follow"]}</p>
         <p><a class="btn" href="/reply_center">Open Reply Center</a> <a class="btn orange" href="/sync_replies">Sync Now</a></p>
+      </div>
+    </div>
+
+    <div class="three">
+      <div class="section">
+        <h2>Sales Pipeline V6.0</h2>
+        <p>Replied: {v6["replied"]}</p>
+        <p>HOT Leads: {v6["hot"]}</p>
+        <p>Quoted: {v6["quoted"]}</p>
+        <p>Negotiation: {v6["negotiation"]}</p>
+        <p>Ordered: {v6["ordered"]}</p>
+      </div>
+      <div class="section">
+        <h2>Pipeline Value</h2>
+        <div class="num">${v6["pipeline"]:,.0f}</div>
+        <p>Quotes: {v6["quote_count"]}</p>
+        <p>Order Value: ${v6["order_value"]:,.0f}</p>
+      </div>
+      <div class="section">
+        <h2>Sales Actions</h2>
+        <p><a class="btn green" href="/quotes">Quote Center</a></p>
+        <p><a class="btn orange" href="/followup_center">Follow Up Center</a></p>
+        <p><a class="btn" href="/auto_hot_leads">Auto Detect HOT Leads</a></p>
       </div>
     </div>
 
@@ -1698,6 +1814,169 @@ def auto_pipeline_web(request, count: int):
     background_tasks.add_task(_auto_pipeline_worker, count)
     return HTMLResponse(f"Pipeline {count} started")
 
+
+
+# ===== SOGRACE CRM V6.0 SALES PIPELINE ROUTES START =====
+@app.get("/auto_hot_leads", response_class=HTMLResponse)
+def auto_hot_leads(request: Request):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+    changed = _v6_auto_hot_from_replies()
+    return HTMLResponse(f"<h2>HOT Lead Detection Done</h2><p>Updated records: {changed}</p><p><a href='/'>Dashboard</a> | <a href='/reply_center'>Reply Center</a></p>")
+
+@app.get("/followup_center", response_class=HTMLResponse)
+def followup_center(request: Request):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+    today = datetime.date.today().isoformat()
+    conn = db()
+    rows = conn.execute("""
+        SELECT id,company,email,status,owner,next_followup,last_contact
+        FROM leads
+        WHERE next_followup!=''
+        ORDER BY next_followup ASC, id DESC
+        LIMIT 300
+    """).fetchall()
+    conn.close()
+    trs = ""
+    for r in rows:
+        lead_id, company, email_addr, status, owner, nf, last = r
+        color = "#ef4444" if nf and nf < today else ("#f59e0b" if nf == today else "#0bbf7a")
+        trs += f"""
+        <tr>
+          <td><a href="/lead/{lead_id}">{html.escape(company or '')}</a></td>
+          <td>{html.escape(email_addr or '')}</td>
+          <td>{html.escape(status or '')}</td>
+          <td>{html.escape(owner or '')}</td>
+          <td><span style="background:{color};padding:4px 8px;border-radius:8px">{html.escape(nf or '')}</span></td>
+          <td>{html.escape(last or '')}</td>
+        </tr>
+        """
+    return HTMLResponse(f"""
+    <html><head><title>Follow Up Center</title>
+    <style>body{{font-family:Arial;background:#07111f;color:white;padding:24px}}table{{width:100%;border-collapse:collapse;background:#0b1628}}th,td{{padding:10px;border-bottom:1px solid #233;text-align:left}}th{{background:#132846}}a{{color:white}}.btn{{background:#2563eb;color:white;padding:8px 12px;border-radius:8px;text-decoration:none}}</style>
+    </head><body>
+    <h1>⏰ Follow Up Center</h1>
+    <p><a class="btn" href="/">Dashboard</a></p>
+    <table><tr><th>Company</th><th>Email</th><th>Status</th><th>Owner</th><th>Next Follow Up</th><th>Last Contact</th></tr>{trs or '<tr><td colspan="6">No follow up tasks.</td></tr>'}</table>
+    </body></html>
+    """)
+
+@app.get("/quotes", response_class=HTMLResponse)
+def quotes_page(request: Request):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+    _v6_init_sales_tables()
+    conn = db()
+    quotes = conn.execute("SELECT id,lead_id,company,product,qty,price,amount,status,quote_date,owner,note FROM quotes ORDER BY id DESC LIMIT 200").fetchall()
+    leads = conn.execute("SELECT id,company,email FROM leads ORDER BY id DESC LIMIT 500").fetchall()
+    conn.close()
+    lead_opts = "".join([f"<option value='{x[0]}'>{html.escape((x[1] or '') + ' | ' + (x[2] or ''))}</option>" for x in leads])
+    rows = ""
+    for q in quotes:
+        qid, lead_id, company, product, qty, price, amount, status, qdate, owner, note = q
+        rows += f"""
+        <tr>
+          <td>{qid}</td><td><a href="/lead/{lead_id}">{html.escape(company or '')}</a></td><td>{html.escape(product or '')}</td>
+          <td>{qty}</td><td>${float(price or 0):,.2f}</td><td>${float(amount or 0):,.0f}</td>
+          <td>{html.escape(status or '')}</td><td>{html.escape(qdate or '')}</td><td>{html.escape(owner or '')}</td>
+          <td><a href="/quote_status/{qid}/Sent">Sent</a> | <a href="/quote_status/{qid}/Negotiation">Negotiation</a> | <a href="/quote_status/{qid}/Won">Won</a> | <a href="/quote_status/{qid}/Lost">Lost</a></td>
+        </tr>
+        """
+    return HTMLResponse(f"""
+    <html><head><title>Quote Center</title>
+    <style>body{{font-family:Arial;background:#07111f;color:white;padding:24px}}input,select,textarea{{padding:9px;margin:5px;border-radius:8px;border:0}}button,.btn{{background:#2563eb;color:white;padding:9px 14px;border-radius:8px;text-decoration:none;border:0}}table{{width:100%;border-collapse:collapse;background:#0b1628;margin-top:16px}}th,td{{padding:10px;border-bottom:1px solid #233;text-align:left}}th{{background:#132846}}a{{color:white}}</style>
+    </head><body>
+    <h1>💰 Quote Center V6.0</h1>
+    <p><a class="btn" href="/">Dashboard</a></p>
+    <form action="/quote_add" method="post">
+      <select name="lead_id">{lead_opts}</select>
+      <input name="product" placeholder="Product" value="GPS SOS Watch">
+      <input name="qty" type="number" placeholder="Qty" value="100">
+      <input name="price" type="number" step="0.01" placeholder="Price" value="45">
+      <select name="status"><option>Draft</option><option>Sent</option><option>Negotiation</option><option>Won</option><option>Lost</option></select>
+      <input name="note" placeholder="Note">
+      <button>Add Quote</button>
+    </form>
+    <table><tr><th>ID</th><th>Customer</th><th>Product</th><th>Qty</th><th>Price</th><th>Amount</th><th>Status</th><th>Date</th><th>Owner</th><th>Action</th></tr>{rows or '<tr><td colspan="10">No quotes yet.</td></tr>'}</table>
+    </body></html>
+    """)
+
+@app.post("/quote_add")
+def quote_add(request: Request, lead_id:int=Form(...), product:str=Form(""), qty:int=Form(0), price:float=Form(0), status:str=Form("Draft"), note:str=Form("")):
+    username = request.cookies.get("crm_user") or ""
+    conn = db()
+    lead = conn.execute("SELECT company FROM leads WHERE id=?", (lead_id,)).fetchone()
+    company = lead[0] if lead else ""
+    amount = float(qty or 0) * float(price or 0)
+    today = datetime.date.today().isoformat()
+    conn.execute("INSERT INTO quotes(lead_id,company,product,qty,price,amount,status,quote_date,owner,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                 (lead_id,company,product,qty,price,amount,status,today,username,note,datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    if status in ["Sent","Negotiation","Won"]:
+        new_status = "QUOTED" if status == "Sent" else ("NEGOTIATION" if status == "Negotiation" else "ORDERED")
+        conn.execute("UPDATE leads SET status=?, expected_amount=?, next_followup=? WHERE id=?",
+                     (new_status, amount, (datetime.date.today()+datetime.timedelta(days=3)).isoformat(), lead_id))
+    conn.commit(); conn.close()
+    return RedirectResponse("/quotes", 303)
+
+@app.get("/quote_status/{qid}/{status}")
+def quote_status(qid:int, status:str):
+    conn = db()
+    q = conn.execute("SELECT lead_id,amount FROM quotes WHERE id=?", (qid,)).fetchone()
+    conn.execute("UPDATE quotes SET status=? WHERE id=?", (status, qid))
+    if q:
+        lead_id, amount = q
+        new_status = {"Sent":"QUOTED","Negotiation":"NEGOTIATION","Won":"ORDERED","Lost":"LOST"}.get(status, "QUOTED")
+        conn.execute("UPDATE leads SET status=?, expected_amount=? WHERE id=?", (new_status, amount or 0, lead_id))
+    conn.commit(); conn.close()
+    return RedirectResponse("/quotes", 303)
+
+@app.get("/orders", response_class=HTMLResponse)
+def orders_page(request: Request):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+    _v6_init_sales_tables()
+    conn = db()
+    orders = conn.execute("SELECT id,lead_id,company,product,qty,value,po_date,status,owner,note FROM orders ORDER BY id DESC LIMIT 200").fetchall()
+    leads = conn.execute("SELECT id,company,email FROM leads ORDER BY id DESC LIMIT 500").fetchall()
+    conn.close()
+    lead_opts = "".join([f"<option value='{x[0]}'>{html.escape((x[1] or '') + ' | ' + (x[2] or ''))}</option>" for x in leads])
+    rows = ""
+    for o in orders:
+        oid, lead_id, company, product, qty, value, po_date, status, owner, note = o
+        rows += f"<tr><td>{oid}</td><td><a href='/lead/{lead_id}'>{html.escape(company or '')}</a></td><td>{html.escape(product or '')}</td><td>{qty}</td><td>${float(value or 0):,.0f}</td><td>{html.escape(po_date or '')}</td><td>{html.escape(status or '')}</td><td>{html.escape(owner or '')}</td></tr>"
+    return HTMLResponse(f"""
+    <html><head><title>Order Center</title>
+    <style>body{{font-family:Arial;background:#07111f;color:white;padding:24px}}input,select{{padding:9px;margin:5px;border-radius:8px;border:0}}button,.btn{{background:#2563eb;color:white;padding:9px 14px;border-radius:8px;text-decoration:none;border:0}}table{{width:100%;border-collapse:collapse;background:#0b1628;margin-top:16px}}th,td{{padding:10px;border-bottom:1px solid #233;text-align:left}}th{{background:#132846}}a{{color:white}}</style>
+    </head><body>
+    <h1>📦 Order Center V6.0</h1>
+    <p><a class="btn" href="/">Dashboard</a></p>
+    <form action="/order_add" method="post">
+      <select name="lead_id">{lead_opts}</select>
+      <input name="product" placeholder="Product" value="GPS SOS Watch">
+      <input name="qty" type="number" placeholder="Qty" value="100">
+      <input name="value" type="number" step="0.01" placeholder="Value" value="4500">
+      <select name="status"><option>Pending</option><option>Production</option><option>Shipped</option><option>Completed</option></select>
+      <input name="note" placeholder="Note">
+      <button>Add Order</button>
+    </form>
+    <table><tr><th>ID</th><th>Customer</th><th>Product</th><th>Qty</th><th>Value</th><th>PO Date</th><th>Status</th><th>Owner</th></tr>{rows or '<tr><td colspan="8">No orders yet.</td></tr>'}</table>
+    </body></html>
+    """)
+
+@app.post("/order_add")
+def order_add(request: Request, lead_id:int=Form(...), product:str=Form(""), qty:int=Form(0), value:float=Form(0), status:str=Form("Pending"), note:str=Form("")):
+    username = request.cookies.get("crm_user") or ""
+    conn = db()
+    lead = conn.execute("SELECT company FROM leads WHERE id=?", (lead_id,)).fetchone()
+    company = lead[0] if lead else ""
+    today = datetime.date.today().isoformat()
+    conn.execute("INSERT INTO orders(lead_id,company,product,qty,value,po_date,status,owner,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                 (lead_id,company,product,qty,value,today,status,username,note,datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.execute("UPDATE leads SET status='ORDERED', expected_amount=? WHERE id=?", (value, lead_id))
+    conn.commit(); conn.close()
+    return RedirectResponse("/orders", 303)
+# ===== SOGRACE CRM V6.0 SALES PIPELINE ROUTES END =====
 
 # ===== USER MANAGEMENT V4.5 START =====
 from fastapi import Form
