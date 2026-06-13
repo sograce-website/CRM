@@ -502,6 +502,7 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
         <a class="btn orange" href="/auto_collect">Auto Collect Leads</a>
         <a class="btn" href="/auto_send/50">Auto Send 50</a>
         <a class="btn" href="/auto_send/100">Auto Send 100</a>
+        <a class="btn orange" href="/auto_send_v52/200">Auto Send V5.2 200</a>
         <a class="btn" href="/bulk_send/50">Send 50</a>
         <a class="btn" href="/bulk_send/100">Send 100</a>
       </div>
@@ -1300,17 +1301,30 @@ def email_center(request: Request):
 
 
 def _auto_send_worker(count: int):
-    import subprocess
+    import subprocess, os
+    crm_dir = "/home/admin/crm"
+    v52 = os.path.join(crm_dir, "auto_send_v52_crm.py")
+    log_file = "/home/admin/crm/crm_bulk_send.log"
+
     try:
-        subprocess.run(
-            ["./venv/bin/python", "auto_send_v40.py", "send", str(count)],
-            cwd="/home/admin/crm",
-            stdout=open("/home/admin/crm/auto_send_v40.log", "a"),
-            stderr=open("/home/admin/crm/auto_send_v40.log", "a"),
-            timeout=1800
-        )
+        if os.path.exists(v52):
+            subprocess.run(
+                ["./venv/bin/python", "auto_send_v52_crm.py", "send", str(count)],
+                cwd=crm_dir,
+                stdout=open(log_file, "a"),
+                stderr=open(log_file, "a"),
+                timeout=3600
+            )
+        else:
+            subprocess.run(
+                ["./venv/bin/python", "auto_send_v40.py", "send", str(count)],
+                cwd=crm_dir,
+                stdout=open("/home/admin/crm/auto_send_v40.log", "a"),
+                stderr=open("/home/admin/crm/auto_send_v40.log", "a"),
+                timeout=1800
+            )
     except Exception as e:
-        with open("/home/admin/crm/auto_send_v40.log", "a", encoding="utf-8") as f:
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write("AUTO_SEND_WORKER_ERROR: " + str(e) + "\\n")
 
 
@@ -1333,6 +1347,27 @@ def auto_send_web(request: Request, background_tasks: BackgroundTasks, count: in
     <p><a href="/email_center">Email Center</a></p>
     <p><a href="/">Back to CRM</a></p>
     """)
+
+@app.get("/auto_send_v52/{count}", response_class=HTMLResponse)
+def auto_send_v52_web(request: Request, background_tasks: BackgroundTasks, count: int = ApiPath(..., ge=1, le=500)):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+
+    username = request.cookies.get("crm_user")
+    role = get_user_role(username) or "sales"
+    if role != "admin":
+        return HTMLResponse("<h2>Access Denied</h2><p><a href='/'>Back</a></p>")
+
+    _v51_write_status("email", "Started", f"Auto Send V5.2 {count} clicked")
+    background_tasks.add_task(_auto_send_worker, count)
+
+    return HTMLResponse(f"""
+    <h2>Auto Email V5.2 Started</h2>
+    <p>Sending up to {count} emails from CRM database in background.</p>
+    <p><a href="/email_center">Email Center</a></p>
+    <p><a href="/">Back to CRM</a></p>
+    """)
+
 # ===== CRM V4.1 WEB PATCH REAL END =====
 
 def _auto_pipeline_worker(count: int):
