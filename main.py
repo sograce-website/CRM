@@ -77,6 +77,16 @@ def _v51_today_count_from_text(text):
     today = datetime.date.today().isoformat()
     return text.count(today)
 
+def _v51_log_count(pattern, path=None):
+    """
+    Count real events from log file as fallback when JSON status saved/skipped is wrong.
+    """
+    try:
+        text = _v51_safe_read(path or V13_COLLECT_LOG, 300000)
+        return len(re.findall(pattern, text))
+    except Exception:
+        return 0
+
 def _v51_email_numbers():
     text = _v51_safe_read(V51_EMAIL_LOG, 12000) + "\n" + _v51_safe_read(CRM_DIR / "crm_bulk_send.log", 12000)
     sent = len(re.findall(r"\b(SENT|Sent|Bulk Email Sent|OK:)\b", text))
@@ -107,17 +117,32 @@ def _v51_collect_numbers():
                 "failed": "CHECK LOG"
             }
             status = status_map.get(raw_status, raw_status.upper() if raw_status else "READY")
+            found = int(data.get("found", 0) or 0)
+            saved = int(data.get("saved", 0) or 0)
+            skipped = int(data.get("skipped", 0) or 0)
+            failed = int(data.get("failed", 0) or 0)
+            email_found = int(data.get("email_found", 0) or 0)
+
+            # P2 fix:
+            # Some collector versions write saved=0 at finish even though the log contains SAVED lines.
+            # Dashboard should show the real saved count from auto_collect_new.log.
+            log_saved = _v51_log_count(r"\bSAVED\b", V13_COLLECT_LOG)
+            if log_saved > saved:
+                saved = log_saved
+                skipped = max(found - saved, 0)
+
             return {
                 "status": status,
-                "found": int(data.get("found", 0) or 0),
-                "saved": int(data.get("saved", 0) or 0),
-                "skipped": int(data.get("skipped", 0) or 0),
-                "failed": int(data.get("failed", 0) or 0),
+                "found": found,
+                "saved": saved,
+                "skipped": skipped,
+                "failed": failed,
+                "email_found": email_found,
                 "today": _v51_today_count_from_text(_v51_safe_read(V13_COLLECT_LOG, 12000)),
                 "keyword": data.get("current_keyword", ""),
                 "site": data.get("current_site", ""),
                 "updated": data.get("updated", ""),
-                "message": data.get("message", "AUTO COLLECT V1.3 status loaded")
+                "message": data.get("message", "AUTO COLLECT status loaded")
             }
     except Exception as e:
         return {
@@ -460,7 +485,7 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
     <div class="grid">
       <div class="card"><div class="label">Today Follow Up</div><div class="num">{len(today_items)}</div></div>
       <div class="card red"><div class="label">Overdue Follow Up</div><div class="num">{len(overdue_items)}</div></div>
-      <div class="card"><div class="label">Auto Collect</div><div class="num">{v51_collect_status}</div><div class="small">Found: {v51_collect_found} · Saved: {v51_status["collect"].get("saved",0)} · Skipped: {v51_status["collect"].get("skipped",0)}</div></div>
+      <div class="card"><div class="label">Auto Collect</div><div class="num">{v51_collect_status}</div><div class="small">Found: {v51_collect_found} · Saved: {v51_status["collect"].get("saved",0)} · Skipped: {v51_status["collect"].get("skipped",0)} · Email: {v51_status["collect"].get("email_found",0)}</div></div>
       <div class="card"><div class="label">Auto Email</div><div class="num">{v51_email_status}</div><div class="small">Sent: {v51_email_sent} · Failed: {v51_email_failed}</div></div>
       <div class="card"><div class="label">Visible Leads</div><div class="num">{len(leads)}</div></div>
     </div>
