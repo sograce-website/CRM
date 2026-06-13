@@ -809,6 +809,14 @@ input,select,textarea{{padding:10px;margin:5px;border-radius:10px;border:1px sol
 button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:10px;cursor:pointer}}
 .notice p{{margin:8px 0;color:#dbeafe}}
 .small{{color:var(--muted);font-size:13px}}
+.reply-stat-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
+.reply-stat{{display:block;background:#0b1628;border:1px solid var(--line);border-radius:14px;padding:14px;color:white;text-decoration:none}}
+.reply-stat:hover{{background:#132846;transform:translateY(-1px)}}
+.reply-stat span{{display:block;color:#cbd5e1;font-size:13px;margin-bottom:8px}}
+.reply-stat b{{font-size:28px}}
+.reply-stat.redbox b{{color:#ff9b9b}}
+.reply-stat.orangebox b{{color:#fbbf24}}
+.reply-stat.greenbox b{{color:#86efac}}
 @media(max-width:1200px){{.grid{{grid-template-columns:repeat(2,1fr)}}.two,.three{{grid-template-columns:1fr}}}}
 @media(max-width:800px){{.layout{{grid-template-columns:1fr}}.sidebar{{position:relative;height:auto}}}}
 </style>
@@ -897,12 +905,22 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
         {p4["top_country_html"]}
       </div>
       <div class="section">
-        <h2>Reply Center P5.2</h2>
-        <p>Customer Replies: {p5_reply["customer"]}</p>
-        <p>Bounce Emails: {p5_reply["bounce"]}</p>
-        <p>System Emails: {p5_reply["system"]}</p>
-        <p>Need Follow Up: {p5_reply["need_follow"]}</p>
-        <p><a class="btn" href="/reply_center">Open Reply Center</a> <a class="btn orange" href="/sync_replies">Sync Now</a></p>
+        <h2>Reply Center P5.3</h2>
+        <div class="reply-stat-grid">
+          <a class="reply-stat" href="/reply_center?category=CUSTOMER">
+            <span>Customer Replies</span><b>{p5_reply["customer"]}</b>
+          </a>
+          <a class="reply-stat redbox" href="/reply_center?category=BOUNCE">
+            <span>Bounce Emails</span><b>{p5_reply["bounce"]}</b>
+          </a>
+          <a class="reply-stat orangebox" href="/reply_center?category=SYSTEM">
+            <span>System Emails</span><b>{p5_reply["system"]}</b>
+          </a>
+          <a class="reply-stat greenbox" href="/reply_center?category=CUSTOMER&status=UNREAD">
+            <span>Need Follow Up</span><b>{p5_reply["need_follow"]}</b>
+          </a>
+        </div>
+        <p style="margin-top:14px"><a class="btn" href="/reply_center">Open Reply Center</a> <a class="btn orange" href="/sync_replies">Sync Now</a></p>
       </div>
     </div>
 
@@ -2229,7 +2247,7 @@ def reclassify_replies(request: Request):
     return HTMLResponse(f"<h2>Reclassified</h2><p>Customer: {res['customer']}</p><p>System: {res['system']}</p><p>Bounce: {res['bounce']}</p><p><a href='/reply_center'>Back</a></p>")
 
 @app.get("/reply_center", response_class=HTMLResponse)
-def reply_center_v52_p52(request: Request, category: str = "CUSTOMER"):
+def reply_center_v52_p52(request: Request, category: str = "CUSTOMER", status: str = ""):
     if not is_login(request):
         return RedirectResponse("/login", 303)
     _p5_init_reply_db()
@@ -2248,6 +2266,14 @@ def reply_center_v52_p52(request: Request, category: str = "CUSTOMER"):
     if category != "ALL":
         where = "WHERE r.category=?"
         params.append(category)
+
+    status = (status or "").upper()
+    if status:
+        if where:
+            where += " AND r.status=?"
+        else:
+            where = "WHERE r.status=?"
+        params.append(status)
 
     if role != "admin":
         if where:
@@ -2295,6 +2321,8 @@ def reply_center_v52_p52(request: Request, category: str = "CUSTOMER"):
     body{{font-family:Arial;background:#07111f;color:white;margin:0;padding:24px}}
     .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}}
     .card{{background:#111d33;padding:18px;border-radius:12px}}
+    .linkcard{{display:block;text-decoration:none;color:white}}
+    .linkcard:hover{{background:#132846}}
     .num{{font-size:30px;font-weight:900}}
     table{{width:100%;border-collapse:collapse;background:#0b1628;border-radius:12px;overflow:hidden}}
     th,td{{padding:10px;border-bottom:1px solid #233;text-align:left;font-size:13px}}
@@ -2316,10 +2344,10 @@ def reply_center_v52_p52(request: Request, category: str = "CUSTOMER"):
       <a class="btn" href="/reply_center?category=ALL">All</a>
     </p>
     <div class="grid">
-      <div class="card">Customer Replies<div class="num">{m["customer"]}</div></div>
-      <div class="card">Bounce<div class="num">{m["bounce"]}</div></div>
-      <div class="card">System<div class="num">{m["system"]}</div></div>
-      <div class="card">Need Follow Up<div class="num">{m["need_follow"]}</div></div>
+      <a class="card linkcard" href="/reply_center?category=CUSTOMER">Customer Replies<div class="num">{m["customer"]}</div></a>
+      <a class="card linkcard" href="/reply_center?category=BOUNCE">Bounce<div class="num">{m["bounce"]}</div></a>
+      <a class="card linkcard" href="/reply_center?category=SYSTEM">System<div class="num">{m["system"]}</div></a>
+      <a class="card linkcard" href="/reply_center?category=CUSTOMER&status=UNREAD">Need Follow Up<div class="num">{m["need_follow"]}</div></a>
     </div>
     <table>
       <tr><th>ID</th><th>Date</th><th>From</th><th>Subject</th><th>Type</th><th>Lead</th><th>Owner</th><th>Status</th><th>Action</th></tr>
