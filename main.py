@@ -7,8 +7,10 @@ import html
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 import sqlite3, csv, io, datetime, json
 import smtplib
+import imaplib
+import email
 from email.mime.text import MIMEText
-from email.header import Header
+from email.header import Header, decode_header
 
 app = FastAPI()
 DB = "/home/admin/crm/crm.db"
@@ -247,13 +249,169 @@ def _p4_dashboard_metrics():
     }
 # ===== CRM V5.2 P4 DASHBOARD HELPERS END =====
 
+# ===== CRM V5.2 P5.1 REPLY CENTER HELPERS START =====
+IMAP_HOST = "imap.qiye.aliyun.com"
+IMAP_PORT = 993
+IMAP_USER = "info@sograce.cn"
+IMAP_PASSWORD = SMTP_PASSWORD
+
+def _p5_init_reply_db():
+    conn = db()
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS email_replies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_uid TEXT UNIQUE,
+        sender TEXT,
+        sender_email TEXT,
+        subject TEXT,
+        received_time TEXT,
+        body TEXT,
+        status TEXT DEFAULT 'UNREAD',
+        owner TEXT DEFAULT '',
+        lead_id INTEGER DEFAULT 0,
+        created_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+def _p5_decode_mime(value):
+    if not value:
+        return ""
+    try:
+        parts = decode_header(value)
+        out = ""
+        for txt, enc in parts:
+            if isinstance(txt, bytes):
+                out += txt.decode(enc or "utf-8", errors="ignore")
+            else:
+                out += txt
+        return out
+    except Exception:
+        return str(value)
+
+def _p5_clean_sender(raw):
+    raw = _p5_decode_mime(raw or "")
+    m = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", raw)
+    sender_email = m.group(1).lower() if m else ""
+    sender = raw.replace("<"+sender_email+">", "").strip().strip('"') if sender_email else raw
+    return sender, sender_email
+
+def _p5_match_lead(sender_email):
+    if not sender_email:
+        return 0, ""
+    conn = db()
+    row = conn.execute("""
+        SELECT id, COALESCE(owner,'')
+        FROM leads
+        WHERE lower(email) LIKE ?
+        ORDER BY id DESC
+        LIMIT 1
+    """, (f"%{sender_email.lower()}%",)).fetchone()
+    conn.close()
+    if row:
+        return int(row[0]), row[1] or ""
+    return 0, ""
+
+def _p5_extract_body(msg):
+    try:
+        if msg.is_multipart():
+            for part in msg.walk():
+                ctype = part.get_content_type()
+                disp = str(part.get("Content-Disposition") or "")
+                if ctype == "text/plain" and "attachment" not in disp:
+                    payload = part.get_payload(decode=True)
+                    charset = part.get_content_charset() or "utf-8"
+                    return (payload or b"").decode(charset, errors="ignore")[:8000]
+            for part in msg.walk():
+                if part.get_content_type() == "text/html":
+                    payload = part.get_payload(decode=True)
+                    charset = part.get_content_charset() or "utf-8"
+                    html_body = (payload or b"").decode(charset, errors="ignore")
+                    return re.sub("<[^<]+?>", " ", html_body)[:8000]
+        else:
+            payload = msg.get_payload(decode=True)
+            charset = msg.get_content_charset() or "utf-8"
+            return (payload or b"").decode(charset, errors="ignore")[:8000]
+    except Exception:
+        return ""
+    return ""
+
+def _p5_sync_imap(limit=50):
+    _p5_init_reply_db()
+    synced = 0
+    failed = 0
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        mail.login(IMAP_USER, IMAP_PASSWORD)
+        mail.select("INBOX")
+        typ, data = mail.search(None, "ALL")
+        if typ != "OK":
+            return {"synced": 0, "failed": 1, "message": "IMAP search failed"}
+
+        ids = data[0].split()[-int(limit):]
+        conn = db()
+        for mid in ids:
+            try:
+                typ, msg_data = mail.fetch(mid, "(RFC822)")
+                if typ != "OK" or not msg_data or not msg_data[0]:
+                    failed += 1
+                    continue
+                raw = msg_data[0][1]
+                msg = email.message_from_bytes(raw)
+                uid = mid.decode()
+                subject = _p5_decode_mime(msg.get("Subject", ""))
+                sender, sender_email = _p5_clean_sender(msg.get("From", ""))
+                received_time = msg.get("Date", "") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                body = _p5_extract_body(msg)
+                lead_id, owner = _p5_match_lead(sender_email)
+
+                conn.execute("""
+                    INSERT OR IGNORE INTO email_replies
+                    (message_uid,sender,sender_email,subject,received_time,body,status,owner,lead_id,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    uid, sender, sender_email, subject, received_time, body,
+                    "UNREAD", owner, lead_id, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ))
+
+                if lead_id:
+                    old = conn.execute("SELECT history FROM leads WHERE id=?", (lead_id,)).fetchone()
+                    old_history = old[0] if old and old[0] else ""
+                    line = f"\n{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} Customer Reply | From: {sender_email} | Subject: {subject}"
+                    if line not in old_history:
+                        conn.execute("UPDATE leads SET status='REPLIED', history=? WHERE id=?", (old_history + line, lead_id))
+                synced += 1
+            except Exception:
+                failed += 1
+        conn.commit()
+        conn.close()
+        mail.logout()
+        return {"synced": synced, "failed": failed, "message": "IMAP sync finished"}
+    except Exception as e:
+        return {"synced": synced, "failed": failed + 1, "message": str(e)}
+
+def _p5_reply_metrics():
+    _p5_init_reply_db()
+    conn = db()
+    today = datetime.date.today().isoformat()
+    unread = conn.execute("SELECT COUNT(*) FROM email_replies WHERE status='UNREAD'").fetchone()[0]
+    today_replies = conn.execute("SELECT COUNT(*) FROM email_replies WHERE created_at LIKE ?", (today+"%",)).fetchone()[0]
+    need_follow = conn.execute("SELECT COUNT(*) FROM email_replies WHERE status IN ('UNREAD','FOLLOW_UP')").fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM email_replies").fetchone()[0]
+    conn.close()
+    return {"unread": unread, "today": today_replies, "need_follow": need_follow, "total": total}
+# ===== CRM V5.2 P5.1 REPLY CENTER HELPERS END =====
+
+
 # ===== CRM V5.1 LIVE STATUS HELPERS END =====
 
 def stats():
     conn = db()
     c = conn.cursor()
     data = {}
-    for st in ["NEW","CONTACTED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]:
+    for st in ["NEW","CONTACTED","REPLIED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]:
         data[st] = c.execute(
             "SELECT COUNT(*) FROM leads WHERE UPPER(COALESCE(status,''))=?",
             (st,)
@@ -377,6 +535,7 @@ def home(request: Request, q: str = ""):
     v51_email_failed = v51_status["email"]["failed"]
 
     p4 = _p4_dashboard_metrics()
+    p5_reply = _p5_reply_metrics()
 
 
     rows = ""
@@ -404,7 +563,7 @@ def home(request: Request, q: str = ""):
                     <input name="owner" value="{l[12] or ''}" placeholder="Owner">
                     <input name="next_followup" value="{l[13] or ''}" placeholder="Next Follow Up">
                     <select name="status">
-                        <option>{l[9]}</option><option>NEW</option><option>CONTACTED</option><option>QUOTED</option><option>SAMPLE</option><option>NEGOTIATION</option><option>ORDERED</option><option>LOST</option>
+                        <option>{l[9]}</option><option>NEW</option><option>CONTACTED</option><option>REPLIED</option><option>QUOTED</option><option>SAMPLE</option><option>NEGOTIATION</option><option>ORDERED</option><option>LOST</option>
                     </select>
                     <select name="product_interest">
                         <option>{l[14] or ''}</option><option>GPS Watch</option><option>GPS SOS Watch</option><option>GPS Tracker</option><option>Vehicle Tracker</option><option>Pet Tracker</option><option>OEM Project</option>
@@ -422,7 +581,7 @@ def home(request: Request, q: str = ""):
         """
 
     # V5.1 dynamic dashboard calculations
-    status_order = ["NEW","CONTACTED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]
+    status_order = ["NEW","CONTACTED","REPLIED","QUOTED","SAMPLE","NEGOTIATION","ORDERED","LOST"]
     max_stage = max([stats_data.get(x,0) for x in status_order] + [1])
 
     funnel_html = ""
@@ -456,7 +615,7 @@ def home(request: Request, q: str = ""):
 <html>
 <head>
 <meta charset="utf-8">
-<title>SOGRACE CRM V5.2 P4 Professional Dashboard</title>
+<title>SOGRACE CRM V5.2 P5 Reply Center Professional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root{{
@@ -514,7 +673,7 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
 <div class="layout">
   <aside class="sidebar">
     <div class="logo">SOGRACE CRM</div>
-    <div class="ver">V5.2 P4 Professional</div>
+    <div class="ver">V5.2 P5 Reply Center</div>
     <div class="nav">
       <a class="active" href="/">📊 Dashboard</a>
       <a href="#leads">👥 Recent Leads</a>
@@ -591,10 +750,11 @@ button{{padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:
         {p4["top_country_html"]}
       </div>
       <div class="section">
-        <h2>Reply Center</h2>
-        <p>Unread Replies: 0</p>
-        <p>Today Replies: 0</p>
-        <p>Need Follow Up: {len(today_items) + len(overdue_items)}</p>
+        <h2>Reply Center P5.1</h2>
+        <p>Unread Replies: {p5_reply["unread"]}</p>
+        <p>Today Replies: {p5_reply["today"]}</p>
+        <p>Need Follow Up: {p5_reply["need_follow"]}</p>
+        <p><a class="btn" href="/reply_center">Open Reply Center</a> <a class="btn orange" href="/sync_replies">Sync Now</a></p>
       </div>
     </div>
 
@@ -1710,47 +1870,121 @@ def v51_status_page(request: Request):
     </body></html>
     """)
 
-@app.get("/reply_center", response_class=HTMLResponse)
-def reply_center_v51(request: Request):
+
+# ===== CRM V5.2 P5.1 REPLY CENTER ROUTES START =====
+@app.get("/sync_replies", response_class=HTMLResponse)
+def sync_replies(request: Request):
     if not is_login(request):
         return RedirectResponse("/login", 303)
+    res = _p5_sync_imap(80)
+    return HTMLResponse(f"""
+    <html><body style="font-family:Arial;background:#07111f;color:white;padding:30px">
+    <h2>Reply Sync Finished</h2>
+    <p>Synced: {res.get('synced',0)}</p>
+    <p>Failed: {res.get('failed',0)}</p>
+    <p>{html.escape(str(res.get('message','')))}</p>
+    <p><a href="/reply_center" style="color:white">Reply Center</a> | <a href="/" style="color:white">Dashboard</a></p>
+    </body></html>
+    """)
+
+@app.get("/reply_center", response_class=HTMLResponse)
+def reply_center_v52_p5(request: Request):
+    if not is_login(request):
+        return RedirectResponse("/login", 303)
+    _p5_init_reply_db()
     username = request.cookies.get("crm_user")
     role = get_user_role(username) or "sales"
     conn = db()
     if role == "admin":
         rows = conn.execute("""
-            SELECT id,company,email,status,last_contact,note,owner
-            FROM leads
-            ORDER BY COALESCE(last_contact,'') DESC, id DESC
-            LIMIT 80
+            SELECT r.id,r.sender,r.sender_email,r.subject,r.received_time,r.status,r.owner,r.lead_id,
+                   COALESCE(l.company,'') AS company
+            FROM email_replies r
+            LEFT JOIN leads l ON r.lead_id=l.id
+            ORDER BY r.id DESC
+            LIMIT 200
         """).fetchall()
     else:
         rows = conn.execute("""
-            SELECT id,company,email,status,last_contact,note,owner
-            FROM leads
-            WHERE owner=?
-            ORDER BY COALESCE(last_contact,'') DESC, id DESC
-            LIMIT 80
+            SELECT r.id,r.sender,r.sender_email,r.subject,r.received_time,r.status,r.owner,r.lead_id,
+                   COALESCE(l.company,'') AS company
+            FROM email_replies r
+            LEFT JOIN leads l ON r.lead_id=l.id
+            WHERE r.owner=? OR r.owner=''
+            ORDER BY r.id DESC
+            LIMIT 200
         """, (username,)).fetchall()
+    m = _p5_reply_metrics()
     conn.close()
-    html_rows = ""
+
+    trs = ""
     for r in rows:
-        html_rows += f"<tr><td><a href='/lead/{r[0]}'>{html.escape(str(r[1] or ''))}</a></td><td>{html.escape(str(r[2] or ''))}</td><td>{html.escape(str(r[3] or ''))}</td><td>{html.escape(str(r[4] or ''))}</td><td>{html.escape(str(r[6] or ''))}</td><td>{html.escape(str(r[5] or ''))}</td></tr>"
-    if not html_rows:
-        html_rows = "<tr><td colspan='6'>No reply data yet.</td></tr>"
+        rid,sender,sender_email,subject,received_time,status,owner,lead_id,company = r
+        lead_link = f"<a href='/lead/{lead_id}'>{html.escape(company or 'Open Lead')}</a>" if lead_id else "Not matched"
+        trs += f"""
+        <tr>
+          <td>{rid}</td>
+          <td>{html.escape(received_time or '')}</td>
+          <td>{html.escape(sender_email or sender or '')}</td>
+          <td>{html.escape(subject or '')}</td>
+          <td>{lead_link}</td>
+          <td>{html.escape(owner or '')}</td>
+          <td>{html.escape(status or '')}</td>
+          <td>
+            <a class="btn" href="/reply_done/{rid}">Done</a>
+            <a class="btn orange" href="/reply_followup/{rid}">Follow Up</a>
+          </td>
+        </tr>
+        """
     return HTMLResponse(f"""
-    <html><head><title>Reply Center V5.1</title>
+    <html><head><title>SOGRACE CRM Reply Center P5.1</title>
     <style>
-    body{{font-family:Arial;background:#07111f;color:white;margin:0;padding:25px}}
-    .card{{background:#111d33;padding:20px;border-radius:12px}}
-    table{{width:100%;border-collapse:collapse}} th,td{{padding:10px;border-bottom:1px solid rgba(255,255,255,.1);text-align:left}}
-    th{{background:#0b1f3a}} a{{color:white}}
+    body{{font-family:Arial;background:#07111f;color:white;margin:0;padding:24px}}
+    .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}}
+    .card{{background:#111d33;padding:18px;border-radius:12px}}
+    .num{{font-size:30px;font-weight:900}}
+    table{{width:100%;border-collapse:collapse;background:#0b1628;border-radius:12px;overflow:hidden}}
+    th,td{{padding:10px;border-bottom:1px solid #233;text-align:left;font-size:13px}}
+    th{{background:#132846}}
+    a{{color:white}}
+    .btn{{background:#2563eb;color:white;padding:7px 10px;border-radius:8px;text-decoration:none;margin:2px;display:inline-block}}
+    .orange{{background:#f59e0b}}
     </style></head><body>
-    <h1>Reply Center V5.1</h1>
-    <p><a href="/">← Back Dashboard</a> | <a href="/v51_status">V5.1 Status</a></p>
-    <div class="card"><table>
-    <tr><th>Company</th><th>Email</th><th>Status</th><th>Last Contact</th><th>Owner</th><th>Note</th></tr>
-    {html_rows}
-    </table></div></body></html>
+    <h1>📨 Reply Center P5.1</h1>
+    <p><a class="btn" href="/">Dashboard</a> <a class="btn orange" href="/sync_replies">Sync Now</a></p>
+    <div class="grid">
+      <div class="card">Total Replies<div class="num">{m["total"]}</div></div>
+      <div class="card">Unread<div class="num">{m["unread"]}</div></div>
+      <div class="card">Today<div class="num">{m["today"]}</div></div>
+      <div class="card">Need Follow Up<div class="num">{m["need_follow"]}</div></div>
+    </div>
+    <table>
+      <tr><th>ID</th><th>Date</th><th>From</th><th>Subject</th><th>Lead</th><th>Owner</th><th>Status</th><th>Action</th></tr>
+      {trs or '<tr><td colspan="8">No replies yet. Click Sync Now.</td></tr>'}
+    </table>
+    </body></html>
     """)
+
+@app.get("/reply_done/{rid}")
+def reply_done(rid:int):
+    conn = db()
+    conn.execute("UPDATE email_replies SET status='DONE' WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/reply_center", 303)
+
+@app.get("/reply_followup/{rid}")
+def reply_followup(rid:int):
+    conn = db()
+    row = conn.execute("SELECT lead_id FROM email_replies WHERE id=?", (rid,)).fetchone()
+    tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    if row and row[0]:
+        conn.execute("UPDATE leads SET next_followup=?, status='REPLIED' WHERE id=?", (tomorrow, row[0]))
+    conn.execute("UPDATE email_replies SET status='FOLLOW_UP' WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/reply_center", 303)
+# ===== CRM V5.2 P5.1 REPLY CENTER ROUTES END =====
+
+
 # ===== CRM V5.1 LIVE STATUS ROUTES END =====
